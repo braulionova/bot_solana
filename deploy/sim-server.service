@@ -1,0 +1,31 @@
+[Unit]
+Description=Helios – Simulation Proxy Server
+After=network-online.target
+Wants=network-online.target
+# Start before helios-bot
+Before=helios-bot.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/spy_node
+
+ExecStart=/root/spy_node/target/release/sim-server
+
+EnvironmentFile=/etc/helios/helios.env
+EnvironmentFile=-/root/spy_node/flash_accounts.env
+
+# sim-server reads:
+#   UPSTREAM_RPC_URL  – upstream Helius endpoint for HTTP proxy mode
+#   BANKS_SERVER_ADDR – (optional) tarpc BanksServer address for BanksClient mode
+#   SIM_SERVER_PORT   – port to listen on (default 8081)
+
+Environment=UPSTREAM_RPC_URL=https://mainnet.helius-rpc.com/?api-key=7a329d50-3612-44d8-805e-5f493a4cfb7c
+Environment=SIM_SERVER_PORT=8081
+
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

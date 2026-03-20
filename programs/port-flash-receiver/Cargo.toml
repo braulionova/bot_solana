@@ -1,0 +1,17 @@
+[package]
+name = "port-flash-receiver"
+version = "0.1.0"
+edition = "2021"
+description = "Port Finance flash-loan callback receiver for Helios"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "port_flash_receiver"
+
+[features]
+no-entrypoint = []
+default = []
+
+[dependencies]
+solana-program = { workspace = true }
+borsh = { workspace = true }

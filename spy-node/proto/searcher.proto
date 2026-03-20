@@ -1,0 +1,106 @@
+syntax = "proto3";
+
+package searcher;
+
+import "packet.proto";
+
+message NextScheduledLeaderRequest {
+  repeated string regions = 1;
+}
+
+message NextScheduledLeaderResponse {
+  uint64 current_slot = 1;
+  uint64 next_leader_slot = 2;
+  string next_leader_identity = 3;
+  string next_leader_region = 4;
+}
+
+message MempoolSubscription {
+  oneof msg {
+    ProgramSubscriptionV0 program = 1;
+    WriteLockedAccountSubscriptionV0 write_locked_account = 2;
+  }
+}
+
+message ProgramSubscriptionV0 {
+  repeated string programs = 1;
+}
+
+message WriteLockedAccountSubscriptionV0 {
+  repeated string accounts = 1;
+}
+
+message PendingTxNotification {
+  uint64 server_side_ts = 1;
+  int64 expiration_time = 2;
+  repeated packet.PacketBatch transactions = 3;
+}
+
+message SendBundleRequest {
+  Bundle bundle = 1;
+}
+
+message SendBundleResponse {
+  string uuid = 1;
+}
+
+message Bundle {
+  repeated packet.Packet transactions = 1;
+  Header header = 2;
+}
+
+message Header {
+  uint64 ts = 1;
+}
+
+message SubscribeBundleResultsRequest {}
+
+message BundleResult {
+  string bundle_id = 1;
+  oneof result {
+    Accepted accepted = 2;
+    Rejected rejected = 3;
+  }
+}
+
+message Accepted {}
+
+message Rejected {
+  oneof reason {
+    SimulationFailure simulation_failure = 1;
+    StateAuctionBidRejected state_auction_bid_rejected = 2;
+    WinningBatchBidRejected winning_batch_bid_rejected = 3;
+    InternalError internal_error = 4;
+    DroppedBundle dropped_bundle = 5;
+  }
+}
+
+message SimulationFailure {
+  string tx_signature = 1;
+  optional string msg = 2;
+}
+
+message StateAuctionBidRejected {
+  string auction_id = 1;
+  uint64 simulated_bid_lamports = 2;
+}
+
+message WinningBatchBidRejected {
+  string auction_id = 1;
+  uint64 simulated_bid_lamports = 2;
+}
+
+message InternalError {
+  string msg = 1;
+}
+
+message DroppedBundle {
+  string msg = 1;
+}
+
+service SearcherService {
+  rpc GetNextScheduledLeader(NextScheduledLeaderRequest) returns (NextScheduledLeaderResponse);
+  rpc SubscribeBundleResults(SubscribeBundleResultsRequest) returns (stream BundleResult);
+  rpc SendBundle(SendBundleRequest) returns (SendBundleResponse);
+  rpc SubscribeMempoolTransactions(MempoolSubscription) returns (stream PendingTxNotification);
+}

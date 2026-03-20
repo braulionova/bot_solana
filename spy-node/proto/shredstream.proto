@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package shredstream;
+
+// The IP:port where we want to receive shreds via UDP.
+message SocketAddr {
+  string ip = 1;
+  uint32 port = 2;
+}
+
+// Sent periodically to tell the block engine to keep forwarding shreds to us.
+message Heartbeat {
+  SocketAddr socket = 1;
+  repeated string regions = 2;
+}
+
+// Block engine responds with a TTL; client must re-heartbeat before TTL expires.
+message HeartbeatResponse {
+  uint32 ttl_ms = 1;
+}
+
+service Shredstream {
+  rpc SendHeartbeat(Heartbeat) returns (HeartbeatResponse);
+}
+
+// ShredstreamProxy — gRPC service exposed by jito-shredstream-proxy.
+// Streams decoded entries from shreds.
+
+service ShredstreamProxy {
+  rpc SubscribeEntries(SubscribeEntriesRequest) returns (stream Entry);
+}
+
+message SubscribeEntriesRequest {}
+
+message Entry {
+  uint64 slot = 1;
+  // Serialized Vec<solana_entry::entry::Entry>
+  bytes entries = 2;
+}

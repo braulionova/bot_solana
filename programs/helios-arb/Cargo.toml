@@ -1,0 +1,24 @@
+[package]
+name        = "helios-arb"
+version     = "0.1.0"
+edition     = "2021"
+description = "Helios Gold V2 – On-chain Anchor arbitrage program"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name       = "helios_arb"
+
+[features]
+no-entrypoint  = []
+no-idl         = []
+no-log-ix-name = []
+cpi            = ["no-entrypoint"]
+default        = []
+idl-build      = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+
+[dependencies]
+anchor-lang = { version = "0.30", features = ["init-if-needed"] }
+anchor-spl  = { version = "0.30" }
+
+[dev-dependencies]
+anchor-client = "0.30"

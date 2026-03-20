@@ -1,0 +1,44 @@
+[package]
+name        = "executor"
+version     = "0.1.0"
+edition     = "2021"
+description = "Helios Gold V2 – TX builder and Jito bundle sender"
+
+[lib]
+name = "executor"
+path = "src/lib.rs"
+
+[dependencies]
+spy-node            = { path = "../spy-node" }
+market-engine       = { path = "../market-engine" }
+strategy-logger     = { path = "../strategy-logger" }
+ml-scorer           = { path = "../ml-scorer" }
+
+solana-sdk          = { workspace = true }
+solana-rpc-client   = { workspace = true }
+solana-rpc-client-api = { workspace = true }
+solana-transaction-status = { workspace = true }
+
+borsh               = { workspace = true }
+crossbeam-channel   = { workspace = true }
+dashmap             = { workspace = true }
+tokio               = { workspace = true }
+anyhow              = { workspace = true }
+tracing             = { workspace = true }
+tracing-subscriber  = { workspace = true }
+serde               = { workspace = true }
+serde_json          = { workspace = true }
+bincode             = { workspace = true }
+bs58                = { workspace = true }
+parking_lot         = { workspace = true }
+reqwest             = { workspace = true }
+futures             = { workspace = true }
+rayon               = { workspace = true }
+clap                = { workspace = true }
+libc                = { workspace = true }
+base64              = { workspace = true }
+yellowstone-grpc-client = { workspace = true }
+yellowstone-grpc-proto  = { workspace = true }
+tonic               = { workspace = true }
+tokio-postgres      = { workspace = true }
+chrono              = { workspace = true }

@@ -1,0 +1,41 @@
+[Unit]
+Description=Helios Gold V2 – Solana Arbitrage Bot
+Documentation=https://github.com/helios/spy-node
+After=network-online.target jito-shredstream-proxy.service
+Wants=network-online.target jito-shredstream-proxy.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/spy_node
+
+# Binary (integrated pipeline)
+ExecStart=/root/spy_node/target/release/helios
+
+# Auto-restart on crash
+Restart=always
+RestartSec=5s
+StartLimitInterval=120s
+StartLimitBurst=5
+
+# ── Environment ──────────────────────────────────────────────────────────────
+EnvironmentFile=/etc/helios/helios.env
+# Flash loan accounts (MarginFi, Kamino, Solend, Port)
+EnvironmentFile=-/root/spy_node/flash_accounts.env
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=helios-bot
+
+# ── Resource limits ──────────────────────────────────────────────────────────
+# Increase UDP receive buffer (Solana shreds)
+LimitNOFILE=1000000
+LimitMEMLOCK=infinity
+
+# ── Hardening (básico) ───────────────────────────────────────────────────────
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

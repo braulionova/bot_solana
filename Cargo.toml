@@ -1,0 +1,128 @@
+[workspace]
+members = [
+    "spy-node",
+    "market-engine",
+    "executor",
+    "programs/helios-arb",
+    "programs/port-flash-receiver",
+    "helios",
+    "sim-server",
+    "strategy-logger",
+    "ml-scorer",
+    "mini-agave",
+    "agave-lite-core",
+    "helios-ingest",
+]
+exclude = ["geyser-plugin"]
+resolver = "2"
+
+[workspace.dependencies]
+# Solana — versiones estables de crates.io (mismas que solana-bot, ya en caché local)
+solana-sdk                = "1.18.26"
+solana-client             = "1.18.26"
+solana-program            = "1.18.26"
+solana-transaction-status = "1.18.26"
+solana-account-decoder    = "1.18.26"
+solana-rpc-client         = "1.18.26"
+solana-rpc-client-api     = "1.18.26"
+solana-pubsub-client      = "1.18.26"
+solana-gossip            = "1.18.26"
+solana-ledger             = "1.18.26"
+solana-entry              = "1.18.26"
+
+# gRPC (Jito ShredStream, versiones compatibles con solana 1.18 ecosystem)
+tonic                    = { version = "0.9", features = ["tls", "tls-roots", "transport"] }
+prost                    = "0.11"
+prost-types              = "0.11"
+solana-net-utils         = "1.18.26"
+solana-streamer          = "1.18.26"
+
+# Anchor
+anchor-lang               = "0.30"
+anchor-spl                = "0.30"
+
+# Graph / routing
+petgraph                  = "0.8.3"
+
+# Concurrencia y colecciones
+crossbeam-channel         = "0.5"
+dashmap                   = "5"
+lru                       = "0.12"
+parking_lot               = "0.12"
+rayon                     = "1"
+
+# Reed-Solomon erasure recovery
+reed-solomon-erasure      = "6"
+
+# Allocator baja latencia
+mimalloc                  = { version = "0.1", default-features = false }
+
+# CPU pinning
+core_affinity             = "0.8"
+
+# Async runtime (solo I/O auxiliar: RPC, Jito API, Telegram)
+tokio                     = { version = "1", features = ["full"] }
+futures                   = "0.3"
+
+# Geyser gRPC (Yellowstone) — detección de DEX sin whitelist
+yellowstone-grpc-client   = "1.14"
+yellowstone-grpc-proto    = "1.14"
+
+# HTTP
+reqwest                   = { version = "0.11", features = ["json", "rustls-tls"], default-features = false }
+
+# WebSocket (async, con rustls TLS)
+tokio-tungstenite         = { version = "0.20", features = ["rustls-tls-native-roots"] }
+url                       = "2"
+
+# Serialización
+serde                     = { version = "1", features = ["derive"] }
+serde_json                = "1"
+bincode                   = "1"
+borsh                     = "1"
+toml                      = "0.8"
+base64                    = "0.21"
+bs58                      = "0.5"
+hex                       = "0.4"
+
+# Logging
+tracing                   = "0.1"
+tracing-subscriber        = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow                    = "1"
+thiserror                 = "1"
+
+# CLI config
+clap                      = { version = "4", features = ["derive", "env"] }
+
+# Misc
+libc                      = "0.2"
+chrono                    = { version = "0.4", features = ["serde"] }
+rand                      = "0.8"
+
+# PostgreSQL async (ML training data)
+tokio-postgres            = { version = "0.7", features = ["with-serde_json-1", "with-chrono-0_4"] }
+
+# Redis (sub-ms pool metadata cache, blockhash cache)
+redis                     = { version = "0.25", features = ["tokio-comp"] }
+
+# PIN obligatorio: resuelve conflicto solana-perf vs rustls
+zeroize                   = "=1.3.0"
+
+# ── Perfiles de compilación ──────────────────────────────────────────────────
+
+[profile.release]
+opt-level        = 3
+lto              = "fat"
+codegen-units    = 1
+panic            = "abort"
+strip            = "symbols"
+overflow-checks  = false
+debug             = false
+
+[profile.release.build-override]
+opt-level = 3
+
+[profile.dev]
+opt-level = 1

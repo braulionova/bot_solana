@@ -1,0 +1,82 @@
+# ── Build artifacts ──
+target/
+*.so
+*.dylib
+*.o
+
+# ── Anchor artifacts ──
+.anchor/
+programs/**/target/
+
+# ── Node.js ──
+node_modules/
+dist/
+
+# ── Environment files with secrets ──
+.env
+*.env
+!.env.example
+flash_accounts.env
+helios.env
+
+# ── Wallets / Keys / Keypairs (NEVER commit) ──
+wallet.json
+identity.json
+auth.json
+*_keypair.json
+*.json.bak
+*.key
+*.pem
+
+# ── Sensitive config files ──
+richat.json
+plugin.json
+
+# ── Database files ──
+*.db
+*.sqlite
+*.sqlite3
+dump.rdb
+
+# ── Solana ledger / snapshot data ──
+solana-spy-ledger/
+agave-lite-ledger/
+snapshot-*.tar.zst
+snapshot-*.tar.bz2
+
+# ── Generated data (large, regenerable) ──
+mapped_pools.json
+top_routes.json
+ml_model_state.*
+
+# ── Logs ──
+*.log
+logs/
+
+# ── IDE / Editor ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+
+# ── Python ──
+__pycache__/
+*.pyc
+.venv/
+
+# ── Claude Code memory (project-specific, not for repo) ──
+.claude/
+
+# ── Temporary ──
+/tmp/
+*.tmp
+deploy/port_flash_receiver-keypair.json
+geyser-plugin/vaults.json
+geyser-plugin/geyser-config.json
+payer.json
+route_alt_cache.json

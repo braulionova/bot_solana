@@ -1,0 +1,24 @@
+[Unit]
+Description=Jito ShredStream Proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/spy_node
+EnvironmentFile=/etc/helios/helios.env
+ExecStartPre=-/usr/bin/docker rm -f jito-shredstream-proxy
+ExecStart=/root/spy_node/deploy/jito-shredstream-proxy.sh
+Restart=always
+RestartSec=2s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jito-shredstream-proxy
+LimitNOFILE=1000000
+LimitMEMLOCK=infinity
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

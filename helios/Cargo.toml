@@ -1,0 +1,46 @@
+[package]
+name        = "helios"
+version     = "0.1.0"
+edition     = "2021"
+description = "Helios Gold V2 – Integrated bot binary (spy-node + market-engine + executor)"
+
+[[bin]]
+name = "helios"
+path = "src/main.rs"
+
+[dependencies]
+spy-node         = { path = "../spy-node" }
+market-engine    = { path = "../market-engine" }
+executor         = { path = "../executor" }
+agave-lite-core  = { path = "../agave-lite-core" }
+strategy-logger  = { path = "../strategy-logger" }
+ml-scorer        = { path = "../ml-scorer" }
+
+chrono           = { workspace = true }
+
+solana-sdk              = { workspace = true }
+solana-rpc-client       = { workspace = true }
+solana-pubsub-client    = { workspace = true }
+solana-rpc-client-api   = { workspace = true }
+
+crossbeam-channel   = { workspace = true }
+tokio               = { workspace = true }
+anyhow              = { workspace = true }
+tracing             = { workspace = true }
+tracing-subscriber  = { workspace = true }
+serde               = { workspace = true }
+serde_json          = { workspace = true }
+clap                = { workspace = true }
+parking_lot         = { workspace = true }
+mimalloc            = { workspace = true }
+
+reqwest             = { workspace = true }
+futures             = { workspace = true }
+tokio-tungstenite   = { workspace = true }
+tokio-postgres      = { workspace = true }
+url                 = { workspace = true }
+
+yellowstone-grpc-client = { workspace = true }
+yellowstone-grpc-proto  = { workspace = true }
+base64                  = { workspace = true }
+core_affinity           = { workspace = true }

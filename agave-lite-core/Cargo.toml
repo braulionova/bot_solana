@@ -1,0 +1,26 @@
+[package]
+name = "agave-lite-core"
+version = "0.1.0"
+edition = "2021"
+description = "Embedded account feed: polling + gRPC → shared DashMap. Zero-latency reserves for MEV."
+
+[dependencies]
+solana-sdk         = { workspace = true }
+solana-rpc-client  = { workspace = true }
+
+dashmap            = { workspace = true }
+parking_lot        = { workspace = true }
+crossbeam-channel  = { workspace = true }
+
+tokio              = { workspace = true }
+futures            = { workspace = true }
+
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+
+tracing            = { workspace = true }
+anyhow             = { workspace = true }
+
+# gRPC (Yellowstone proto — Richat compatible)
+yellowstone-grpc-client = { workspace = true }
+yellowstone-grpc-proto  = { workspace = true }

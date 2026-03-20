@@ -1,0 +1,36 @@
+[package]
+name        = "market-engine"
+version     = "0.1.0"
+edition     = "2021"
+description = "Helios Gold V2 – Signal processor, route engine, scoring, flash selector"
+
+[lib]
+name = "market_engine"
+path = "src/lib.rs"
+
+[dependencies]
+spy-node            = { path = "../spy-node" }
+strategy-logger     = { path = "../strategy-logger" }
+agave-lite-core     = { path = "../agave-lite-core" }
+
+solana-sdk          = { workspace = true }
+solana-rpc-client   = { workspace = true }
+solana-rpc-client-api = { workspace = true }
+
+petgraph            = { workspace = true }
+crossbeam-channel   = { workspace = true }
+dashmap             = { workspace = true }
+tokio               = { workspace = true }
+anyhow              = { workspace = true }
+tracing             = { workspace = true }
+reqwest             = { workspace = true, features = ["blocking", "json"] }
+serde               = { workspace = true }
+serde_json          = { workspace = true }
+parking_lot         = { workspace = true }
+chrono              = { workspace = true }
+thiserror           = { workspace = true }
+base64              = { workspace = true }
+ml-scorer           = { path = "../ml-scorer" }
+bs58                = { workspace = true }
+tokio-postgres      = { workspace = true }
+redis               = { workspace = true }

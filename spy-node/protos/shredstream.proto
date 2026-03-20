@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package shredstream;
+
+import "shared.proto";
+import "google/protobuf/timestamp.proto";
+
+// Shredstream Proxy — subscribe to decoded entries from shreds
+service ShredstreamProxy {
+  rpc SubscribeEntries(SubscribeEntriesRequest) returns (stream Entry);
+}
+
+message SubscribeEntriesRequest {
+  map<string, SubscribeRequestFilterAccounts> accounts = 1;
+  map<string, SubscribeRequestFilterTransactions> transactions = 3;
+  map<string, SubscribeRequestFilterSlots> slots = 2;
+  optional CommitmentLevel commitment = 6;
+}
+
+message SubscribeRequestFilterAccounts {
+  repeated string account = 2;
+  repeated string owner = 3;
+  repeated SubscribeRequestFilterAccountsFilter filters = 4;
+  optional bool nonempty_txn_signature = 5;
+}
+
+message SubscribeRequestFilterAccountsFilter {
+  oneof filter {
+    SubscribeRequestFilterAccountsFilterMemcmp memcmp = 1;
+    uint64 datasize = 2;
+    bool token_account_state = 3;
+    SubscribeRequestFilterAccountsFilterLamports lamports = 4;
+  }
+}
+
+message SubscribeRequestFilterAccountsFilterMemcmp {
+  uint64 offset = 1;
+  oneof data {
+    bytes bytes = 2;
+    string base58 = 3;
+    string base64 = 4;
+  }
+}
+
+message SubscribeRequestFilterAccountsFilterLamports {
+  oneof cmp {
+    uint64 eq = 1;
+    uint64 ne = 2;
+    uint64 lt = 3;
+    uint64 gt = 4;
+  }
+}
+
+message SubscribeRequestFilterSlots {
+  optional bool filter_by_commitment = 1;
+  optional bool interslot_updates = 2;
+}
+
+message SubscribeRequestFilterTransactions {
+  repeated string account_include = 3;
+  repeated string account_exclude = 4;
+  repeated string account_required = 6;
+}
+
+enum CommitmentLevel {
+  PROCESSED = 0;
+  CONFIRMED = 1;
+  FINALIZED = 2;
+}
+
+message Entry {
+  uint64 slot = 1;
+  bytes entries = 2;
+}

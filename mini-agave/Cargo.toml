@@ -1,0 +1,49 @@
+[package]
+name        = "mini-agave"
+version     = "0.1.0"
+edition     = "2021"
+description = "Lightweight Solana state cache — gRPC subscriptions + local RPC (replaces full Agave validator)"
+
+[[bin]]
+name = "mini-agave"
+path = "src/main.rs"
+
+[dependencies]
+# Solana
+solana-sdk             = { workspace = true }
+solana-rpc-client      = { workspace = true }
+solana-rpc-client-api  = { workspace = true }
+solana-client          = "1.18"   # TpuClient (QUIC direct to validators)
+solana-quic-client     = "1.18"  # QuicPool, QuicConnectionManager, QuicConfig
+bincode                = { workspace = true }
+
+# gRPC (Yellowstone)
+yellowstone-grpc-client = { workspace = true }
+yellowstone-grpc-proto  = { workspace = true }
+
+# HTTP server
+axum          = { version = "0.7", features = ["http1", "http2", "json"] }
+
+# Async runtime
+tokio         = { workspace = true }
+futures       = { workspace = true }
+
+# HTTP client (proxy fallback)
+reqwest       = { workspace = true, features = ["json"] }
+
+# Serialization
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+base64        = { workspace = true }
+bs58          = { workspace = true }
+
+# Concurrency
+dashmap       = { workspace = true }
+parking_lot   = { workspace = true }
+crossbeam-channel = { workspace = true }
+
+# Misc
+anyhow        = { workspace = true }
+tracing       = { workspace = true }
+tracing-subscriber = { workspace = true }
+mimalloc      = { workspace = true }

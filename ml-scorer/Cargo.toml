@@ -1,0 +1,67 @@
+[package]
+name        = "ml-scorer"
+version     = "0.1.0"
+edition     = "2021"
+description = "Helios – Online ML scorer that learns hot routes in real-time"
+
+[lib]
+name = "ml_scorer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "train_landing_model"
+path = "src/bin/train_landing_model.rs"
+
+[[bin]]
+name = "scan_hot_routes"
+path = "src/bin/scan_hot_routes.rs"
+
+[[bin]]
+name = "discover_pools"
+path = "src/bin/discover_pools.rs"
+
+[[bin]]
+name = "train_turbo"
+path = "src/bin/train_turbo.rs"
+
+[[bin]]
+name = "train_competition"
+path = "src/bin/train_competition.rs"
+
+[[bin]]
+name = "discover_new_dex"
+path = "src/bin/discover_new_dex.rs"
+
+[[bin]]
+name = "train_3hop"
+path = "src/bin/train_3hop.rs"
+
+[[bin]]
+name = "train_graduation"
+path = "src/bin/train_graduation.rs"
+
+[[bin]]
+name = "parse_snapshot_pools"
+path = "src/bin/parse_snapshot_pools.rs"
+
+[dependencies]
+tracing-subscriber = { workspace = true }
+dashmap            = { workspace = true }
+parking_lot        = { workspace = true }
+tokio              = { workspace = true }
+tokio-postgres     = { workspace = true }
+chrono             = { workspace = true }
+tracing            = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+anyhow             = { workspace = true }
+reqwest            = { workspace = true, features = ["blocking"] }
+base64             = { workspace = true }
+bs58               = { workspace = true }
+solana-sdk             = { workspace = true }
+solana-rpc-client      = { workspace = true }
+solana-rpc-client-api  = { workspace = true }
+solana-account-decoder = { workspace = true }
+memmap2                = "0.9"
+rayon                  = { workspace = true }
+redis                  = { workspace = true }
