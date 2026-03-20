@@ -3293,6 +3293,7 @@ dependencies = [
  "chrono",
  "crossbeam-channel",
  "dashmap",
+ "futures-util",
  "ml-scorer",
  "parking_lot 0.12.5",
  "petgraph 0.8.3",
@@ -3308,6 +3309,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-postgres",
+ "tokio-tungstenite",
  "tracing",
 ]
 

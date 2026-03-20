@@ -35,6 +35,7 @@ pub mod signal_processor;
 pub mod strategies;
 pub mod swap_decoder;
 pub mod types;
+pub mod vault_watcher;
 pub mod wallet_tracker;
 pub mod ml_models;
 pub mod redis_cache;

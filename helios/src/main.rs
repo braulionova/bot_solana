@@ -576,8 +576,16 @@ fn main() -> Result<()> {
     // The ONE-SHOT RPC bootstrap above provides correct initial state.
     info!("pool hydrator RPC refresh DISABLED — running 100% on shreds");
 
-    // xdex-vault-refresh DISABLED — delta tracker handles reserves from shreds.
-    info!("xdex-vault-refresh DISABLED — 100% shred-driven");
+    // Vault watcher: real-time vault tracking via WebSocket accountSubscribe.
+    // Subscribes to cross-DEX vaults only (~200). Updates reserves in ~300ms.
+    // Replaces Agave Geyser push — works with any public RPC WebSocket.
+    market_engine::vault_watcher::spawn_vault_watcher(
+        pool_cache.clone(),
+        vec![
+            "wss://api.mainnet-beta.solana.com".into(),
+        ],
+    );
+    info!("vault-watcher: WebSocket real-time vault tracking started");
 
     // Pool validator: background check that pool accounts still exist on-chain.
     // Removes dead/closed pools that cause 100% of our failed TXs.

@@ -34,3 +34,5 @@ ml-scorer           = { path = "../ml-scorer" }
 bs58                = { workspace = true }
 tokio-postgres      = { workspace = true }
 redis               = { workspace = true }
+tokio-tungstenite   = { workspace = true }
+futures-util        = "0.3"
