@@ -583,6 +583,8 @@ fn main() -> Result<()> {
         pool_cache.clone(),
         vec![
             "wss://api.mainnet-beta.solana.com".into(),
+            "wss://solana-rpc.publicnode.com".into(),
+            "wss://mainnet.helius-rpc.com/?api-key=7996d184-b857-45d5-8f7d-bfd1164e6a95".into(),
         ],
     );
     info!("vault-watcher: WebSocket real-time vault tracking started");
