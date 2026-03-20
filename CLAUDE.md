@@ -703,8 +703,37 @@ tokio::join!(
 - **ML predictor**: `route_3hop_predictor` filtra rutas con P(land) < 0.3, online learning cada 5 min
 - **Telegram**: solo notifica 3-hop, wallet_pattern deshabilitado
 
-### Bugs Críticos Encontrados (2026-03-17 + 2026-03-19)
-- **Proceso zombie helios**: **CAUSA RAÍZ ENCONTRADA**: `helios.service` (duplicado) con `Restart=always`. Ahora `systemctl disable --now`. **NUNCA re-habilitar `helios.service`.**
+### Arquitectura 100% Shred-Driven (2026-03-20)
+```
+Startup:  ONE-SHOT RPC bootstrap (1396 vaults, ~18s) → verifica + carga reserves reales
+Runtime:  100% shreds (0 RPC) → delta tracker 1300+ vault updates/s
+Blockhash: derivado de shreds (~2.5/s, 0 RPC)
+TX send:  Jito bundles direct (Frankfurt ~5ms)
+Latencia: ~17ms detect → on-wire
+```
+- Pool hydrator RPC: **DISABLED**
+- xdex-vault-refresh: **DISABLED**
+- Vault refresh in executor: **DISABLED**
+- Todo viene de shreds después del bootstrap de 18 segundos
+
+### Causa Raíz Definitiva: 0 Arbs Exitosos (2026-03-20)
+1. **8+ pools CERRADAS on-chain** en cache → 100% de TXs iban a cuentas inexistentes
+2. **Reserves de snapshot 50h old** → spreads phantom que no existen on-chain
+3. **Spreads reales <0.01%** → competidores con NVMe+Jito colocación los cierran en <50ms
+4. **Disco SATA 25MB/s** → Agave nunca sincroniza → sin Geyser push → sin reserves real-time
+5. FIX: ONE-SHOT RPC bootstrap + pool validator + 100% shreds
+6. Para profit consistente: **NVMe VPS necesario** ($100-200/mes)
+
+### lite-rpc (Blockworks) — Compilado, Pendiente Activar
+- Binario: `/root/lite-rpc/target/release/lite-rpc`
+- Service: `lite-rpc.service` (DISABLED — necesita Agave upstream sincronizado)
+- Función: sendTransaction optimizado via QUIC directo a líderes
+- RAM: ~4GB — ligero vs Agave completo
+- Activar cuando: Agave local sincronice → lite-rpc como proxy de envío
+
+### Bugs Críticos Encontrados (2026-03-17 + 2026-03-19 + 2026-03-20)
+- **Pools cerradas on-chain**: 8+ pools (58oQChx4, AVs9TA4n, 6UmmUiYo, HBS7a3br, etc.) CERRADAS pero en cache. Generaban 100% de las rutas → 100% failure. **FIX**: ONE-SHOT RPC bootstrap verifica existencia + pool validator cada 5min purga dead pools.
+- **Proceso zombie helios**: **CAUSA RAÍZ ENCONTRADA**: `helios.service` (duplicado) con `Restart=always`. Ahora MASKED (/dev/null symlink). `helios-pool-updater.timer` también MASKED. **NUNCA re-habilitar.**
 - **Spread predictor ML**: bloqueó 796,871 rutas rentables (max 0.523 SOL). Modelo entrenado con 0% success. **FIX**: bypass cuando `JITO_ONLY=true`.
 - **Pool cache vacío al startup**: `mapped_pools.json` fallaba deserialización (PumpSwap pools sin `symbol`/`decimals`). **FIX**: `#[serde(default)]` en MappedPool.
 - **Redis vault balances no cargados**: `load_all_metadata()` usaba `KEYS` scan (1.87M keys) y no cargaba vaults. **FIX**: `load_metadata_fast()` + `load_vault_balances()` con MGET.
