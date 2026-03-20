@@ -705,24 +705,62 @@ tokio::join!(
 
 ### Arquitectura 100% Shred-Driven (2026-03-20)
 ```
-Startup:  ONE-SHOT RPC bootstrap (1396 vaults, ~18s) → verifica + carga reserves reales
-Runtime:  100% shreds (0 RPC) → delta tracker 1300+ vault updates/s
-Blockhash: derivado de shreds (~2.5/s, 0 RPC)
-TX send:  Jito bundles direct (Frankfurt ~5ms)
-Latencia: ~17ms detect → on-wire
+Pipeline completo (17ms teórico, 0 RPC en hot path):
+  Turbine UDP recv     →  ~0ms   (recvmmsg, 8 threads)
+  FEC Reed-Solomon     →  ~1ms   (recovery + deshred)
+  TX decode + swap     →  ~1μs   (bincode + discriminator)
+  Delta tracker        →  ~1μs   (DashMap vault update)
+  ML prediction        →  ~5μs   (8 features, sigmoid)
+  Route engine (BF)    →  ~10ms  (Bellman-Ford + scanners)
+  Blockhash (shreds)   →  ~0ms   (RwLock read)
+  TX build             →  ~1ms   (cached providers)
+  Jito bundle send     →  ~5ms   (Frankfurt gRPC)
+
+Startup:  ONE-SHOT RPC bootstrap (1396 vaults, ~18s)
+Runtime:  100% shreds + WebSocket vault watcher (210 ML-prioritized vaults)
 ```
-- Pool hydrator RPC: **DISABLED**
-- xdex-vault-refresh: **DISABLED**
-- Vault refresh in executor: **DISABLED**
-- Todo viene de shreds después del bootstrap de 18 segundos
+
+### Throughput medido (2026-03-20 22:40 UTC)
+- Shreds: 1,631/s | TXs: 1,592/s | FEC: 0 errors
+- Delta tracker: 357 vault updates/10s
+- Vault watcher WS: 6 connections, 210 vaults real-time (ML-scored)
+- Blockhash: 2.6/s (de shreds, 0 RPC)
+- ML predictor: 22 alerts/min
+- Detección: 7 HIGH-IMPACT+CROSS-DEX / 5min, 1422 instant checks / 5min
+- Reactive refreshes: 15 counterpart pools / 5min
+
+### 16 Módulos implementados
+1. `predictive_arb.rs` — ML 8-feature predictor (swap velocity, burst, imbalance, volume spike)
+2. `vault_watcher.rs` — WebSocket real-time vaults (ML-prioritized selection)
+3. `opportunity_scanner.rs` — continuous cross-DEX scan on every vault update
+4. `shred_strategies.rs` — backrun + oracle arb desde shreds
+5. `whale_backrun.rs` — whale swap cross-DEX backrun con RPC refresh
+6. `clmm_tick_arb.rs` — CLMM↔AMM V4 tick crossing arb
+7. `stablecoin_arb.rs` — USDC/USDT micro-depeg entre pools
+8. `backrun_calculator.rs` — profit ceiling desde user slippage tolerance
+9. `liquidity_events.rs` — LP add/remove detection desde shreds
+10. `fee_tiers.rs` — per-pool fees (Orca 1-200bps, CLMM variable, Meteora dynamic)
+11. `openbook_decoder.rs` — OpenBook/Serum orderbook top-of-book
+12. `pool_validator.rs` — dead pool removal cada 5 min
+13. `blockhash_deriver.rs` — blockhash from shred PoH hashes (0 RPC)
+14. `rpc_pool.rs` — multi-RPC rotation para vault refresh
+15. `jupiter_limit_fill.rs` — Jupiter limit order fill
+16. `pump_graduation_arb.rs` — graduation + reactive inline RPC refresh
+
+### ML Vault Selection
+- 2.5M swaps históricos analizados para scoring
+- Features: swap_count, avg_amount, cv_pct (volatility), n_cross_dex, has_raydium
+- 1,396 cross-DEX vaults scored → top 700 seleccionadas
+- 210 vaults monitoreadas en real-time via WebSocket
+- Online learning: modelo se actualiza con resultados de arb
 
 ### Causa Raíz Definitiva: 0 Arbs Exitosos (2026-03-20)
-1. **8+ pools CERRADAS on-chain** en cache → 100% de TXs iban a cuentas inexistentes
-2. **Reserves de snapshot 50h old** → spreads phantom que no existen on-chain
-3. **Spreads reales <0.01%** → competidores con NVMe+Jito colocación los cierran en <50ms
-4. **Disco SATA 25MB/s** → Agave nunca sincroniza → sin Geyser push → sin reserves real-time
-5. FIX: ONE-SHOT RPC bootstrap + pool validator + 100% shreds
-6. Para profit consistente: **NVMe VPS necesario** ($100-200/mes)
+1. **8+ pools CERRADAS on-chain** en cache → RESUELTO (pool validator + bootstrap)
+2. **Reserves stale** (snapshot 50h old) → RESUELTO (vault watcher WS + delta tracker)
+3. **Spreads reales <30bps < fees 50bps** → competidores con Geyser (<1ms) cierran antes
+4. **SATA 25MB/s** → Agave nunca sincroniza → sin Geyser push
+5. Pipeline detecta 7 ARB CANDIDATES/5min pero spreads llegan a <30bps cuando nuestro scan completa
+6. Con NVMe + Agave Geyser: spreads de 50-200bps visibles → **3-10 SOL/día estimado**
 
 ### lite-rpc (Blockworks) — Compilado, Pendiente Activar
 - Binario: `/root/lite-rpc/target/release/lite-rpc`
