@@ -575,25 +575,91 @@ impl SignalProcessor {
                     whale_detected = true;
                 }
 
-                // ── REACTIVE DISCOVERY: high-impact swap → check cross-DEX arb ──
+                // ── REACTIVE DISCOVERY: high-impact swap → inline RPC refresh + arb ──
+                // When >50% impact swap detected with cross-DEX counterpart:
+                // 1. Inline RPC refresh counterpart vaults (~150ms)
+                // 2. Re-quote arb with fresh data
+                // 3. If profitable → emit route directly
+                // This is the ONLY RPC call in the hot path — only triggers 1-3x/min.
                 if impact >= 50.0 {
                     let wsol: Pubkey = solana_sdk::pubkey!("So11111111111111111111111111111111111111112");
                     let token = if pool.token_a == wsol { pool.token_b } else { pool.token_a };
-                    let counterparts = self.pool_cache.pools_for_token(&token);
-                    let n_cross = counterparts.iter()
+                    let counterparts: Vec<_> = self.pool_cache.pools_for_token(&token)
+                        .into_iter()
                         .filter(|p| p.pool_address != swap.pool && p.reserve_a > 0)
-                        .count();
-                    if n_cross > 0 {
+                        .collect();
+                    if !counterparts.is_empty() {
                         info!(
                             slot, pool = %swap.pool, token = %token,
-                            impact_pct = impact, cross_dex = n_cross,
-                            "HIGH-IMPACT + CROSS-DEX → ARB CANDIDATE"
+                            impact_pct = impact, cross_dex = counterparts.len(),
+                            "HIGH-IMPACT + CROSS-DEX → INLINE RPC REFRESH + ARB CHECK"
                         );
-                        for cp in counterparts.iter().filter(|p| p.pool_address != swap.pool) {
-                            if let Some(ref rtx) = self.targeted_refresh_tx {
-                                let _ = rtx.try_send(cp.pool_address);
+                        // Inline RPC refresh counterpart vaults (spawn thread to avoid blocking)
+                        let cache = self.pool_cache.clone();
+                        let cp_addrs: Vec<Pubkey> = counterparts.iter().map(|p| p.pool_address).collect();
+                        let swap_pool = swap.pool;
+                        let sig_tx = self.output_tx.clone();
+                        std::thread::spawn(move || {
+                            use solana_rpc_client::rpc_client::RpcClient;
+                            use solana_sdk::commitment_config::CommitmentConfig;
+                            let rpc = RpcClient::new_with_timeout_and_commitment(
+                                "https://solana-rpc.publicnode.com".to_string(),
+                                std::time::Duration::from_millis(500),
+                                CommitmentConfig::processed(),
+                            );
+                            for cp_addr in &cp_addrs {
+                                if let Some(cp) = cache.get(cp_addr) {
+                                    // Get vault addresses from metadata
+                                    let mut vaults = Vec::new();
+                                    if let Some(m) = &cp.raydium_meta {
+                                        if m.vault_a != Pubkey::default() {
+                                            vaults.push((m.vault_a, true));
+                                            vaults.push((m.vault_b, false));
+                                        }
+                                    }
+                                    if let Some(m) = &cp.orca_meta {
+                                        if m.token_vault_a != Pubkey::default() {
+                                            vaults.push((m.token_vault_a, true));
+                                            vaults.push((m.token_vault_b, false));
+                                        }
+                                    }
+                                    if let Some(m) = &cp.meteora_meta {
+                                        if m.token_vault_a != Pubkey::default() {
+                                            vaults.push((m.token_vault_a, true));
+                                            vaults.push((m.token_vault_b, false));
+                                        }
+                                    }
+                                    if !vaults.is_empty() {
+                                        let keys: Vec<Pubkey> = vaults.iter().map(|(k,_)| *k).collect();
+                                        if let Ok(accs) = rpc.get_multiple_accounts(&keys) {
+                                            for (i, maybe) in accs.iter().enumerate() {
+                                                if let Some(acc) = maybe {
+                                                    if acc.data.len() >= 72 {
+                                                        let amount = u64::from_le_bytes(
+                                                            acc.data[64..72].try_into().unwrap_or([0u8;8])
+                                                        );
+                                                        cache.update_reserve_by_vault(cp_addr, vaults[i].1, amount);
+                                                    }
+                                                }
+                                            }
+                                            // Emit signal to trigger route engine re-scan
+                                            sig_tx.send(spy_node::signal_bus::SpySignal::LiquidityEvent {
+                                                slot: 0,
+                                                pool: swap_pool,
+                                                event_type: spy_node::signal_bus::LiquidityEventType::Added {
+                                                    amount_a: 0, amount_b: 0,
+                                                },
+                                            }).ok();
+                                            tracing::info!(
+                                                pool = %swap_pool,
+                                                counterpart = %cp_addr,
+                                                "REACTIVE: counterpart refreshed → route engine re-scan triggered"
+                                            );
+                                        }
+                                    }
+                                }
                             }
-                        }
+                        });
                     }
                 }
             } else {
