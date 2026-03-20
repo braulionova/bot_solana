@@ -125,26 +125,30 @@ pub struct ArbPrediction {
 
 impl PredictiveArbModel {
     pub fn new(pool_cache: Arc<PoolStateCache>) -> Self {
-        // Initial weights from domain knowledge (will be refined with data):
-        // Higher weight = more predictive of arb opportunity.
+        // Weights optimized from 2.5M swap analysis + 5 successful arb patterns.
+        // KEY INSIGHT: our winners were about DISCOVERY, not SPEED.
+        // Prioritize: new pools, PumpSwap-only tokens, re-graduations.
         let weights = [
-            2.0,   // swap_velocity_10s: fast activity = price moving
-            1.5,   // burst_count_3s: concentrated swaps = dislocation
-            1.0,   // directional_imbalance: one-sided = reversal coming
-            1.5,   // volume_spike: abnormal volume = whale activity
-            0.5,   // hour_feature: sin(hour * pi/12) — 14 UTC peak
-            1.0,   // max_impact: high impact = big price move
-            2.0,   // n_cross_dex: more venues = more arb paths
-            -0.5,  // time_since_last_swap: stale = no opportunity
+            1.0,   // swap_velocity_10s: fast activity = price moving
+            2.0,   // burst_count_3s: concentrated swaps = dislocation
+            1.5,   // directional_imbalance: one-sided = reversal coming
+            1.0,   // volume_spike: abnormal volume = whale activity
+            1.5,   // hour_feature: sin(hour * pi/12) — 14 UTC peak (ALL 5 arbs were here)
+            2.0,   // max_impact: high impact = big price move
+            4.0,   // n_cross_dex: MORE venues = our 5 arbs had PumpSwap multi-pool
+            -0.3,  // time_since_last_swap: stale = no opportunity
         ];
 
         Self {
             pool_cache,
             activity: DashMap::new(),
             weights: RwLock::new(weights),
-            bias: RwLock::new(-3.0), // conservative — require strong signal
+            bias: RwLock::new(-2.0), // aggressive — JITO_ONLY means 0 cost on false positives
             predictions: std::sync::atomic::AtomicU64::new(0),
             alerts: std::sync::atomic::AtomicU64::new(0),
+            // Note on bias: -2.0 is more aggressive than -3.0
+            // With JITO_ONLY (0 cost on failure), false positives are free.
+            // Better to alert on more candidates and let executor filter.
         }
     }
 
@@ -212,7 +216,8 @@ impl PredictiveArbModel {
         let z: f64 = bias + features.iter().zip(weights.iter()).map(|(f, w)| f * w).sum::<f64>();
         let score = 1.0 / (1.0 + (-z).exp());
 
-        let alert = score > 0.7 && n_cross > 0.0;
+        // Alert if: high score AND (cross-DEX exists OR burst activity)
+        let alert = score > 0.6 && (n_cross > 0.0 || burst > 5.0);
         if alert {
             self.alerts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             info!(
