@@ -1,0 +1,53 @@
+[Unit]
+Description=Helios Gold V2 – Solana Arbitrage Bot
+Documentation=https://github.com/helios/spy-node
+After=network-online.target agave-lite-spy.service
+Wants=network-online.target agave-lite-spy.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/spy_node
+
+# Binary (integrated pipeline)
+ExecStart=/root/spy_node/target/release/helios
+
+# Kill ALL processes in cgroup on stop (prevents zombies)
+KillMode=control-group
+# Ensure PID file tracks the right process
+Type=exec
+
+# NO auto-restart — manual restart only to prevent zombie chains
+# When killall kills the process, systemd must NOT restart it automatically
+Restart=no
+StartLimitInterval=120s
+StartLimitBurst=5
+
+# ── Environment ──────────────────────────────────────────────────────────────
+EnvironmentFile=/etc/helios/helios.env
+# Flash loan accounts (MarginFi, Kamino, Solend, Port)
+EnvironmentFile=-/root/spy_node/flash_accounts.env
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=helios-bot
+
+# ── Resource limits ──────────────────────────────────────────────────────────
+LimitNOFILE=1000000
+LimitMEMLOCK=infinity
+MemoryMax=16G
+MemoryHigh=12G
+
+# ── CPU: pin to cores 12-17 (6 dedicated cores, no contention with Agave) ───
+AllowedCPUs=12-17
+Nice=-15
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=50
+
+# ── Hardening ────────────────────────────────────────────────────────────────
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

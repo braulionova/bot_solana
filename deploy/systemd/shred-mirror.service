@@ -1,0 +1,21 @@
+[Unit]
+Description=Shred Mirror — SolanaCDN TVU shreds to helios spy-node for pool hydration
+After=network.target
+# Mirror copies Turbine shreds arriving at Agave TVU (8802) to helios (8002)
+
+[Service]
+Type=simple
+User=root
+# Mirror shreds from SolanaCDN TVU port (8802) to helios spy-node (8002)
+# These are CURRENT tip shreds — even though SolanaCDN can't replay them,
+# our spy-node decodes TXs and feeds Strategy A delta simulation for pool hydration
+Environment=MIRROR_SRC_PORT=8802
+Environment=MIRROR_DST=127.0.0.1:8002
+Environment=MIRROR_LOG_INTERVAL_SECS=30
+ExecStart=/root/spy_node/target/release/shred-mirror
+Restart=on-failure
+RestartSec=10
+AmbientCapabilities=CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target
