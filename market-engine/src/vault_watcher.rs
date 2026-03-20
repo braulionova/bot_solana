@@ -25,31 +25,49 @@ pub fn spawn_vault_watcher(
     pool_cache: Arc<PoolStateCache>,
     ws_urls: Vec<String>,
 ) {
-    // Collect cross-DEX vaults only
+    // Load ML-prioritized vault list (scored by activity, volatility, cross-DEX paths).
+    // Falls back to cross-DEX static selection if ML file doesn't exist.
     let vault_index = pool_cache.build_vault_index();
-    let wsol = solana_sdk::pubkey!("So11111111111111111111111111111111111111112");
+    let ml_vaults: Option<Vec<Pubkey>> = std::fs::read_to_string("/root/spy_node/deploy/ml_vault_priorities.json")
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .map(|v| v.iter().filter_map(|s| s.parse::<Pubkey>().ok()).collect());
 
-    // Find tokens on 2+ DEXes
-    let mut token_dexes: HashMap<Pubkey, std::collections::HashSet<DexType>> = HashMap::new();
-    for pool in pool_cache.inner_iter() {
-        let token = if pool.token_a == wsol { pool.token_b }
-                   else if pool.token_b == wsol { pool.token_a }
-                   else { continue };
-        token_dexes.entry(token).or_default().insert(pool.dex_type);
-    }
-    let cross_tokens: std::collections::HashSet<Pubkey> = token_dexes.iter()
-        .filter(|(_, d)| d.len() >= 2)
-        .map(|(t, _)| *t)
-        .collect();
+    let cross_vaults: Vec<(Pubkey, Pubkey, bool)> = if let Some(ref ml) = ml_vaults {
+        // Use ML-scored vaults (top by activity + volatility + cross-DEX)
+        let ml_set: std::collections::HashSet<Pubkey> = ml.iter().copied().collect();
+        vault_index.iter()
+            .filter(|(vault, _)| ml_set.contains(vault))
+            .map(|(v, (p, a))| (*v, *p, *a))
+            .collect()
+    } else {
+        // Fallback: all cross-DEX vaults
+        let wsol = solana_sdk::pubkey!("So11111111111111111111111111111111111111112");
+        let mut token_dexes: HashMap<Pubkey, std::collections::HashSet<DexType>> = HashMap::new();
+        for pool in pool_cache.inner_iter() {
+            let token = if pool.token_a == wsol { pool.token_b }
+                       else if pool.token_b == wsol { pool.token_a }
+                       else { continue };
+            token_dexes.entry(token).or_default().insert(pool.dex_type);
+        }
+        let cross_tokens: std::collections::HashSet<Pubkey> = token_dexes.iter()
+            .filter(|(_, d)| d.len() >= 2)
+            .map(|(t, _)| *t)
+            .collect();
+        vault_index.iter()
+            .filter(|(_, (pool_addr, _))| {
+                pool_cache.get(pool_addr).map_or(false, |p|
+                    cross_tokens.contains(&p.token_a) || cross_tokens.contains(&p.token_b))
+            })
+            .map(|(v, (p, a))| (*v, *p, *a))
+            .collect()
+    };
 
-    // Filter vaults to cross-DEX pools only
-    let cross_vaults: Vec<(Pubkey, Pubkey, bool)> = vault_index.iter()
-        .filter(|(_, (pool_addr, _))| {
-            pool_cache.get(pool_addr).map_or(false, |p|
-                cross_tokens.contains(&p.token_a) || cross_tokens.contains(&p.token_b))
-        })
-        .map(|(v, (p, a))| (*v, *p, *a))
-        .collect();
+    info!(
+        ml_scored = ml_vaults.is_some(),
+        "vault-watcher: using {} vault selection",
+        if ml_vaults.is_some() { "ML-prioritized" } else { "static cross-DEX" }
+    );
 
     if cross_vaults.is_empty() {
         warn!("vault-watcher: 0 cross-DEX vaults to watch");
