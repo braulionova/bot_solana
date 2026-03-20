@@ -414,6 +414,77 @@ fn main() -> Result<()> {
             if p.reserve_a > 0 && p.reserve_b > 0 { with_reserves += 1; }
         }
         info!(total_pools = total, pools_with_reserves = with_reserves, "pool cache state after Redis hydration");
+
+        // ── ONE-SHOT RPC BOOTSTRAP: refresh vault balances for pools in graph ──
+        // This is the ONLY RPC call in the entire pipeline. After this,
+        // everything runs on shreds (delta tracker 1300+ updates/s).
+        // ~400 vault accounts = 4 batches × 100 = ~2 seconds total.
+        {
+            let vault_index = pool_cache.build_vault_index();
+            let vault_keys: Vec<solana_sdk::pubkey::Pubkey> = vault_index.keys().copied().collect();
+            info!(vaults = vault_keys.len(), "bootstrap: ONE-SHOT RPC refresh starting");
+
+            let bootstrap_rpc = solana_rpc_client::rpc_client::RpcClient::new_with_timeout_and_commitment(
+                "https://api.mainnet-beta.solana.com".to_string(),
+                std::time::Duration::from_secs(10),
+                solana_sdk::commitment_config::CommitmentConfig::processed(),
+            );
+
+            let mut refreshed = 0u32;
+            let mut dead_pools = Vec::new();
+            for chunk in vault_keys.chunks(100) {
+                match bootstrap_rpc.get_multiple_accounts(chunk) {
+                    Ok(accounts) => {
+                        for (i, maybe_acc) in accounts.iter().enumerate() {
+                            match maybe_acc {
+                                Some(acc) if acc.data.len() >= 72 => {
+                                    let amount = u64::from_le_bytes(
+                                        acc.data[64..72].try_into().unwrap_or([0u8; 8]),
+                                    );
+                                    let vault_key = chunk[i];
+                                    if let Some(&(pool_addr, is_a)) = vault_index.get(&vault_key) {
+                                        if pool_cache.update_reserve_by_vault(&pool_addr, is_a, amount) {
+                                            refreshed += 1;
+                                        }
+                                    }
+                                }
+                                None => {
+                                    // Vault account doesn't exist → pool is dead
+                                    if let Some(&(pool_addr, _)) = vault_index.get(&chunk[i]) {
+                                        dead_pools.push(pool_addr);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "bootstrap RPC batch failed, continuing");
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+
+            // Remove dead pools from cache
+            for pool_addr in &dead_pools {
+                pool_cache.remove(pool_addr);
+            }
+
+            info!(
+                refreshed,
+                dead = dead_pools.len(),
+                "bootstrap: ONE-SHOT RPC complete — switching to 100% shreds"
+            );
+        }
+
+        // Re-count after bootstrap
+        let mut total = 0usize;
+        let mut with_reserves = 0usize;
+        for p in pool_cache.inner_iter() {
+            total += 1;
+            if p.reserve_a > 0 && p.reserve_b > 0 { with_reserves += 1; }
+        }
+        info!(total_pools = total, pools_with_reserves = with_reserves, "pool cache state after RPC bootstrap");
     }
 
     // ── EMBEDDED agave-lite-core: shared AccountCache ──────────────
@@ -500,68 +571,13 @@ fn main() -> Result<()> {
         Err(err) => warn!(error = %err, "failed to load mapped pools for initial refresh"),
     }
 
-    // RPC-based periodic refresh (metadata + vault balances).
-    let hydration_interval_secs: u64 = std::env::var("POOL_HYDRATION_INTERVAL_SECS")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(30);
-    PoolHydrator::spawn_refresh_loop(
-        pool_rpc_url.clone(),
-        pool_cache.clone(),
-        pools_file.to_string(),
-        Duration::from_secs(hydration_interval_secs),
-    );
-    info!(interval_s = hydration_interval_secs, "pool hydrator refresh loops started (fast=1s, slow={}s)", hydration_interval_secs);
+    // RPC-based periodic refresh DISABLED — 100% shred-driven after bootstrap.
+    // Delta tracker handles 1,300+ vault updates/s from shred-decoded SPL transfers.
+    // The ONE-SHOT RPC bootstrap above provides correct initial state.
+    info!("pool hydrator RPC refresh DISABLED — running 100% on shreds");
 
-    // ── Cross-DEX vault refresh: dedicated thread refreshes the 97 cross-DEX
-    //    token pools every 3s via RPC pool. This keeps reserves fresh for arb
-    //    detection WITHOUT blocking the executor hot path.
-    {
-        let xdex_cache = pool_cache.clone();
-        let xdex_rpc = Arc::new(executor::rpc_pool::RpcPool::new(&[
-            "https://solana-rpc.publicnode.com",
-            "https://api.mainnet-beta.solana.com",
-        ]));
-        thread::Builder::new()
-            .name("xdex-vault-refresh".into())
-            .spawn(move || {
-                // Wait for initial hydration.
-                thread::sleep(Duration::from_secs(15));
-
-                // Build vault→pool index from cross-DEX pools only.
-                let vault_index = xdex_cache.build_vault_index();
-                let vault_keys: Vec<solana_sdk::pubkey::Pubkey> = vault_index.keys().copied().collect();
-                info!(vaults = vault_keys.len(), "xdex-vault-refresh: started");
-
-                loop {
-                    // Batch fetch in chunks of 100.
-                    let mut updated = 0u32;
-                    for chunk in vault_keys.chunks(100) {
-                        if let Some(accounts) = xdex_rpc.get_multiple_accounts(chunk) {
-                            for (i, maybe_acc) in accounts.iter().enumerate() {
-                                if let Some(acc) = maybe_acc {
-                                    if acc.data.len() >= 72 {
-                                        let amount = u64::from_le_bytes(
-                                            acc.data[64..72].try_into().unwrap_or([0u8; 8]),
-                                        );
-                                        let vault_key = chunk[i];
-                                        if let Some(&(pool, is_a)) = vault_index.get(&vault_key) {
-                                            if xdex_cache.update_reserve_by_vault(&pool, is_a, amount) {
-                                                updated += 1;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        thread::sleep(Duration::from_millis(100)); // rate limit
-                    }
-                    if updated > 0 {
-                        tracing::debug!(updated, "xdex-vault-refresh: reserves updated");
-                    }
-                    thread::sleep(Duration::from_secs(3));
-                }
-            })
-            .expect("spawn xdex-vault-refresh");
-    }
+    // xdex-vault-refresh DISABLED — delta tracker handles reserves from shreds.
+    info!("xdex-vault-refresh DISABLED — 100% shred-driven");
 
     // Pool validator: background check that pool accounts still exist on-chain.
     // Removes dead/closed pools that cause 100% of our failed TXs.
