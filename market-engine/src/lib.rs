@@ -8,6 +8,7 @@ pub mod liquidity_events;
 pub mod jupiter_limit_fill;
 pub mod openbook_decoder;
 pub mod opportunity_scanner;
+pub mod predictive_arb;
 pub mod pool_validator;
 pub mod rpc_pool_util;
 pub mod shred_strategies;

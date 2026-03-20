@@ -48,6 +48,8 @@ pub struct SignalProcessor {
     shred_engine: Option<Arc<crate::shred_strategies::ShredStrategyEngine>>,
     /// Direct route emitter: bypass route engine for shred-detected arb.
     direct_route_tx: Option<Sender<crate::types::RouteParams>>,
+    /// ML predictive model: scores pools for imminent arb from shred patterns.
+    predictive_model: Arc<crate::predictive_arb::PredictiveArbModel>,
 }
 
 impl SignalProcessor {
@@ -64,8 +66,9 @@ impl SignalProcessor {
             wallet_tracker: None,
             shred_predictor: None,
             new_pool_monitor: None,
-            shred_engine: Some(Arc::new(crate::shred_strategies::ShredStrategyEngine::new(pool_cache))),
+            shred_engine: Some(Arc::new(crate::shred_strategies::ShredStrategyEngine::new(pool_cache.clone()))),
             direct_route_tx: None,
+            predictive_model: Arc::new(crate::predictive_arb::PredictiveArbModel::new(pool_cache)),
         }
     }
 
@@ -437,6 +440,24 @@ impl SignalProcessor {
             if let Some(ref predictor) = self.shred_predictor {
                 let dex_str = format!("{:?}", swap.dex);
                 predictor.observe_swap(&swap.pool.to_string(), &dex_str, swap.amount_in, slot);
+            }
+
+            // ML Predictive Model: observe swap + check if pool is about to have arb.
+            {
+                let impact_est = if let Some(p) = self.pool_cache.get(&swap.pool) {
+                    let r = if swap.a_to_b { p.reserve_a } else { p.reserve_b };
+                    if r > 0 { swap.amount_in as f64 / r as f64 * 100.0 } else { 0.0 }
+                } else { 0.0 };
+                self.predictive_model.observe_swap(&swap.pool, swap.amount_in, swap.a_to_b, impact_est);
+                let pred = self.predictive_model.predict(&swap.pool);
+                if pred.alert {
+                    // ML says high arb probability → trigger route engine re-scan
+                    self.output_tx.send(SpySignal::LiquidityEvent {
+                        slot,
+                        pool: swap.pool,
+                        event_type: spy_node::signal_bus::LiquidityEventType::Added { amount_a: 0, amount_b: 0 },
+                    }).ok();
+                }
             }
 
             // Backrun analysis: calculate profit ceiling from user's slippage tolerance.
