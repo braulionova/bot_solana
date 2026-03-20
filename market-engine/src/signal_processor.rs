@@ -574,6 +574,28 @@ impl SignalProcessor {
                         .ok();
                     whale_detected = true;
                 }
+
+                // ── REACTIVE DISCOVERY: high-impact swap → check cross-DEX arb ──
+                if impact >= 50.0 {
+                    let wsol: Pubkey = solana_sdk::pubkey!("So11111111111111111111111111111111111111112");
+                    let token = if pool.token_a == wsol { pool.token_b } else { pool.token_a };
+                    let counterparts = self.pool_cache.pools_for_token(&token);
+                    let n_cross = counterparts.iter()
+                        .filter(|p| p.pool_address != swap.pool && p.reserve_a > 0)
+                        .count();
+                    if n_cross > 0 {
+                        info!(
+                            slot, pool = %swap.pool, token = %token,
+                            impact_pct = impact, cross_dex = n_cross,
+                            "HIGH-IMPACT + CROSS-DEX → ARB CANDIDATE"
+                        );
+                        for cp in counterparts.iter().filter(|p| p.pool_address != swap.pool) {
+                            if let Some(ref rtx) = self.targeted_refresh_tx {
+                                let _ = rtx.try_send(cp.pool_address);
+                            }
+                        }
+                    }
+                }
             } else {
                 // Unknown pool — still bump swap_gen to trigger route re-evaluation.
                 // A new pool may have appeared (graduation event).
