@@ -32,7 +32,7 @@ fn main() -> Result<()> {
 
     println!("Flash Fill Arb | wallet: {} | amount: {} | min_profit: {}", taker, amount, min_profit);
 
-    let tokens = [USDC, USDT];
+    let tokens = [USDC, USDT, "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So", "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN", "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm", "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN"];
     let mut round = 0u64;
 
     loop {
