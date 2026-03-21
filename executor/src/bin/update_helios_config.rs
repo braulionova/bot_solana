@@ -29,11 +29,16 @@ fn main() -> Result<()> {
     let helios_program: Pubkey = HELIOS_ARB_PROGRAM_ID.parse().unwrap();
     let (config_pda, _) = Pubkey::find_program_address(&[b"config"], &helios_program);
     let whitelist = vec![
-        "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".parse::<Pubkey>()?,
-        "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK".parse::<Pubkey>()?,
-        "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc".parse::<Pubkey>()?,
-        "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo".parse::<Pubkey>()?,
-        "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".parse::<Pubkey>()?,
+        "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".parse::<Pubkey>()?, // Raydium V4
+        "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK".parse::<Pubkey>()?, // Raydium CLMM
+        "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc".parse::<Pubkey>()?,  // Orca Whirlpool
+        "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo".parse::<Pubkey>()?,  // Meteora DLMM
+        "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".parse::<Pubkey>()?,  // PumpSwap
+        "goonuddtQRrWqqn5nFyczVKaie28f3kDkHWkHtURSLE".parse::<Pubkey>()?,  // GoonFi V2
+        "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY".parse::<Pubkey>()?,  // ZeroFi
+        "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp".parse::<Pubkey>()?, // HumidiFi
+        "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C".parse::<Pubkey>()?, // Raydium CPMM
+        "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB".parse::<Pubkey>()?, // Meteora Dynamic AMM
     ];
 
     // Check if config PDA exists; if not, initialize first
