@@ -27,22 +27,33 @@ fn main() -> Result<()> {
     let continuous = std::env::var("CONTINUOUS").map(|v| v == "true").unwrap_or(false);
     let min_profit: i64 = std::env::var("MIN_PROFIT").and_then(|v| Ok(v.parse().unwrap_or(8000))).unwrap_or(8000);
     let taker = kp.pubkey().to_string();
-    let amount = "200000000"; // 0.2 SOL (keeps TX < 1232 with flash loan)
+    // Scan multiple amounts — smaller amounts have less impact, more likely profitable
+    let amounts = ["100000000", "200000000", "500000000"]; // 0.1, 0.2, 0.5 SOL
+    let mut round = 0u64;
 
-    println!("Carbium Flash Arb | wallet: {} | min_profit: {}", taker, min_profit);
+    println!("Carbium Flash Arb | wallet: {} | min_profit: {} | amounts: 0.1/0.2/0.5 SOL", taker, min_profit);
 
     loop {
-        match run_carbium_flash(&client, &api_key, &kp, amount, &taker, min_profit) {
-            Ok(true) => println!("🎉 Flash arb executed!"),
-            Ok(false) => {}
-            Err(e) => {
-                let msg = format!("{}", e);
-                if msg.contains("Rate limit") { std::thread::sleep(std::time::Duration::from_secs(5)); }
-                else if !msg.contains("Not profitable") { println!("⚠️ {}", msg); }
+        round += 1;
+        for &amount in &amounts {
+            match run_carbium_flash(&client, &api_key, &kp, amount, &taker, min_profit) {
+                Ok(true) => println!("🎉 Round {} flash arb executed!", round),
+                Ok(false) => {}
+                Err(e) => {
+                    let msg = format!("{}", e);
+                    if msg.contains("Rate limit") {
+                        println!("⏳ Rate limited, waiting 10s...");
+                        std::thread::sleep(std::time::Duration::from_secs(10));
+                    } else if !msg.contains("Not profitable") {
+                        println!("⚠️ {}", msg);
+                    }
+                }
             }
+            std::thread::sleep(std::time::Duration::from_secs(6)); // ~10 req/min (Carbium limit ~12)
         }
         if !continuous { break; }
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        // Brief pause between full cycles
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
     Ok(())
 }
