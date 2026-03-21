@@ -110,18 +110,33 @@ impl UltraExecutor {
         let body: serde_json::Value = resp.json().await
             .map_err(|e| format!("order json: {}", e))?;
 
+        // Check for errors first
+        if let Some(err) = body.get("error").and_then(|v| v.as_str()) {
+            if !err.is_empty() && err != "null" {
+                return Err(format!("order error: {}", err));
+            }
+        }
+        if let Some(err_msg) = body.get("errorMessage").and_then(|v| v.as_str()) {
+            if !err_msg.is_empty() {
+                return Err(format!("order error: {}", err_msg));
+            }
+        }
+
         let out_amount = body.get("outAmount")
             .and_then(|v| v.as_str())
-            .ok_or("no outAmount")?
+            .unwrap_or("0")
             .to_string();
         let request_id = body.get("requestId")
             .and_then(|v| v.as_str())
-            .ok_or("no requestId")?
+            .unwrap_or("")
             .to_string();
         let transaction = body.get("transaction")
             .and_then(|v| v.as_str())
-            .ok_or("no transaction")?
+            .unwrap_or("")
             .to_string();
+        if transaction.is_empty() || request_id.is_empty() {
+            return Err("no transaction or requestId in response".into());
+        }
         let router = body.get("router")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")

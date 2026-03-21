@@ -2532,11 +2532,12 @@ fn main() -> Result<()> {
 
                     info!(ultra_enabled = ultra.is_some(), "jupiter-arb-scanner started");
 
-                    // Use small amounts to limit risk (our balance is ~1.95 SOL)
+                    // Ultra reserves ~1.9 SOL for fees/rent, leaving only ~0.01 SOL usable
+                    // Scanner still checks larger amounts to detect opportunities
                     let borrow_amounts = [
-                        50_000_000u64,    // 0.05 SOL
-                        100_000_000,      // 0.1 SOL
-                        500_000_000,      // 0.5 SOL
+                        10_000_000u64,    // 0.01 SOL (what Ultra actually accepts)
+                        100_000_000,      // 0.1 SOL (for detection, not execution)
+                        500_000_000,      // 0.5 SOL (for detection only)
                     ];
 
                     // Tokio runtime for Ultra async execution
@@ -2547,7 +2548,7 @@ fn main() -> Result<()> {
 
                     let tg = executor::telegram::TelegramBot::from_env();
                     let min_profit = std::env::var("ULTRA_MIN_PROFIT_LAMPORTS")
-                        .ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(500_000); // 0.0005 SOL min
+                        .ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(50_000); // 0.00005 SOL min
 
                     loop {
                         let targets = scanner.get_scan_targets();
@@ -2560,7 +2561,7 @@ fn main() -> Result<()> {
 
                                 // Execute via Ultra if profitable enough
                                 if let Some(ref ultra) = ultra {
-                                    if opp.profit_lamports > min_profit && opp.borrow_amount <= 500_000_000 {
+                                    if opp.profit_lamports > min_profit && opp.borrow_amount <= 10_000_000 {
                                         let token_str = opp.token.to_string();
                                         let amount = opp.borrow_amount;
                                         let ultra_c = ultra.clone();
