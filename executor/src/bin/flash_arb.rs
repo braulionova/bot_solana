@@ -98,15 +98,11 @@ fn run_flash_arb(client: &reqwest::blocking::Client, api_key: &str, kp: &Keypair
     let token_program: Pubkey = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".parse()?;
     let borrow_amount: u64 = amount.parse()?;
 
-    // Solend SOL reserve accounts (from flash_accounts.env)
-    let reserve: Pubkey = std::env::var("SOLEND_SOL_RESERVE")
-        .unwrap_or("8PbodeaosQP19SjYFx855UMqWxH2HynZLdBXmsrbac36".into()).parse()?;
-    let liquidity_supply: Pubkey = std::env::var("SOLEND_SOL_LIQUIDITY_SUPPLY")
-        .unwrap_or("8UviNr47S8eL6J3WfDxMRa3hvLta1VDJwNWqsDgtN3Cv".into()).parse()?;
-    let fee_receiver: Pubkey = std::env::var("SOLEND_SOL_FEE_RECEIVER")
-        .unwrap_or("5wo1tFpi4HaVKnemqaXeQnBEpezrJXcXvuztYaPhvgC7".into()).parse()?;
-    let lending_market: Pubkey = std::env::var("SOLEND_SOL_LENDING_MARKET")
-        .unwrap_or("4UpD2fh7xH3VP9QQaXtsS1YY3bxzWhtfpks7FatyKvdY".into()).parse()?;
+    // Solend TURBO POOL (from jito-labs/mev-bot — optimized for flash loans, 30bps fee)
+    let reserve: Pubkey = "UTABCRXirrbpCNDogCoqEECtM3V44jXGCsK23ZepV3Z".parse()?;
+    let liquidity_supply: Pubkey = "5cSfC32xBUYqGfkURLGfANuK64naHmMp27jUT7LQSujY".parse()?;
+    let fee_receiver: Pubkey = "5wo1tFpi4HaVKnemqaXeQnBEpezrJXcXvuztYaPhvgC7".parse()?;
+    let lending_market: Pubkey = "7RCz8wb6WXxUhAigok9ttgrVgDFFFbibcirECzWSBauM".parse()?;
     let (market_authority, _) = Pubkey::find_program_address(
         &[lending_market.as_ref()], &solend_program);
 
