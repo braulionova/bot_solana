@@ -678,52 +678,62 @@ impl SignalProcessor {
 
                 // ── Instant cross-DEX check: compare price with counterpart pool ──
                 // After apply_swap_delta, THIS pool has fresh reserves.
-                // Check if the same token has a pool on another DEX with a different price.
-                // This detects spreads within the SAME SLOT as the swap that created them.
+                // Check cross-DEX spread: same token pair, different DEX, different price.
+                // Both pools must be TOKEN/WSOL pairs to compare apples-to-apples.
                 {
-                    let token = if swap.a_to_b { pool.token_b } else { pool.token_a };
-                    let other_pools = self.pool_cache.pools_for_token(&token);
-                    for other in &other_pools {
-                        if other.pool_address == swap.pool { continue; }
-                        if other.reserve_a == 0 || other.reserve_b == 0 { continue; }
-                        // Compare rates: how much token_out do we get for 0.1 SOL?
-                        let test_amount = 100_000_000u64; // 0.1 SOL
-                        let updated_pool = self.pool_cache.get(&swap.pool).unwrap_or(pool.clone());
-                        let rate_this = if updated_pool.token_a == token {
-                            updated_pool.quote_b_to_a(test_amount) // SOL→token
-                        } else {
-                            updated_pool.quote_a_to_b(test_amount)
-                        };
-                        let rate_other = if other.token_a == token {
-                            other.quote_b_to_a(test_amount)
-                        } else {
-                            other.quote_a_to_b(test_amount)
-                        };
-                        if rate_this == 0 || rate_other == 0 { continue; }
-                        let spread_bps = if rate_this > rate_other {
-                            ((rate_this as f64 / rate_other as f64) - 1.0) * 10_000.0
-                        } else {
-                            ((rate_other as f64 / rate_this as f64) - 1.0) * 10_000.0
-                        };
-                        // Fee: PumpSwap 25bps + Raydium 25bps = 50bps minimum
-                        // Filter: both pools must have reasonably fresh reserves.
-                        // Spreads >500% are almost certainly stale reserve artifacts.
-                        if spread_bps > 60.0 && spread_bps < 5000.0 && other.last_updated.elapsed().as_secs() < 300 {
-                            info!(
-                                slot,
-                                pool_a = %swap.pool,
-                                pool_b = %other.pool_address,
-                                dex_a = ?updated_pool.dex_type,
-                                dex_b = ?other.dex_type,
-                                spread_bps = spread_bps as u64,
-                                "INSTANT cross-DEX spread detected after swap!"
-                            );
-                            // Emit as LiquidityEvent to trigger route engine scan
-                            self.output_tx.send(SpySignal::LiquidityEvent {
-                                slot,
-                                pool: swap.pool,
-                                event_type: spy_node::signal_bus::LiquidityEventType::Added { amount_a: 0, amount_b: 0 },
-                            }).ok();
+                    let wsol: Pubkey = solana_sdk::pubkey!("So11111111111111111111111111111111111111112");
+                    // Only check WSOL-paired pools (token/WSOL)
+                    let token = if pool.token_a == wsol { pool.token_b }
+                               else if pool.token_b == wsol { pool.token_a }
+                               else { Pubkey::default() };
+
+                    if token != Pubkey::default() {
+                        let other_pools = self.pool_cache.pools_for_token(&token);
+                        for other in &other_pools {
+                            if other.pool_address == swap.pool { continue; }
+                            if other.reserve_a == 0 || other.reserve_b == 0 { continue; }
+                            // Other pool must also be TOKEN/WSOL pair
+                            let other_has_wsol = other.token_a == wsol || other.token_b == wsol;
+                            let other_has_token = other.token_a == token || other.token_b == token;
+                            if !other_has_wsol || !other_has_token { continue; }
+
+                            // Quote: SOL→token on both pools
+                            let test_amount = 100_000_000u64; // 0.1 SOL
+                            let updated_pool = self.pool_cache.get(&swap.pool).unwrap_or(pool.clone());
+                            let rate_this = if updated_pool.token_a == wsol {
+                                updated_pool.quote_a_to_b(test_amount)
+                            } else {
+                                updated_pool.quote_b_to_a(test_amount)
+                            };
+                            let rate_other = if other.token_a == wsol {
+                                other.quote_a_to_b(test_amount)
+                            } else {
+                                other.quote_b_to_a(test_amount)
+                            };
+                            if rate_this == 0 || rate_other == 0 { continue; }
+                            let spread_bps = if rate_this > rate_other {
+                                ((rate_this as f64 / rate_other as f64) - 1.0) * 10_000.0
+                            } else {
+                                ((rate_other as f64 / rate_this as f64) - 1.0) * 10_000.0
+                            };
+                            // Fee: PumpSwap 25bps + Raydium 25bps = 50bps minimum
+                            if spread_bps > 60.0 && spread_bps < 5000.0 && other.last_updated.elapsed().as_secs() < 300 {
+                                info!(
+                                    slot,
+                                    pool_a = %swap.pool,
+                                    pool_b = %other.pool_address,
+                                    dex_a = ?updated_pool.dex_type,
+                                    dex_b = ?other.dex_type,
+                                    %token,
+                                    spread_bps = spread_bps as u64,
+                                    "REAL cross-DEX spread: same token/WSOL pair, different DEX"
+                                );
+                                self.output_tx.send(SpySignal::LiquidityEvent {
+                                    slot,
+                                    pool: swap.pool,
+                                    event_type: spy_node::signal_bus::LiquidityEventType::Added { amount_a: 0, amount_b: 0 },
+                                }).ok();
+                            }
                         }
                     }
                 }
