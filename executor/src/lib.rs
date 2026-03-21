@@ -12,6 +12,7 @@ pub mod tpu_sender;
 pub mod turbo_sender;
 pub mod turbo_learner;
 pub mod ultra_executor;
+pub mod jupiter_flash;
 pub mod rdtsc;
 pub mod rpc_pool;
 pub mod tx_builder;

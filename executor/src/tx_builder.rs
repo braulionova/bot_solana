@@ -393,6 +393,62 @@ impl TxBuilder {
         out
     }
 
+    /// Build a flash-loan-wrapped TX using Jupiter swap instructions.
+    /// Jupiter handles the DEX routing (GoonFi, ZeroFi, HumidiFi, etc.).
+    /// MarginFi provides the flash loan (borrow SOL → Jupiter swaps → repay).
+    /// The entire round-trip is atomic: fail = 0 cost via Jito bundle.
+    pub fn build_jupiter_flash_tx(
+        &self,
+        jupiter_swap_ixs: Vec<Instruction>,
+        borrow_amount: u64,
+        flash_provider: FlashProvider,
+        recent_blockhash: Hash,
+        alt_accounts: &[solana_sdk::address_lookup_table::AddressLookupTableAccount],
+        tip_ix: Option<Instruction>,
+    ) -> Result<VersionedTransaction> {
+        let borrow_mint: Pubkey = "So11111111111111111111111111111111111111112".parse().unwrap();
+        let borrow_tp: Pubkey = TOKEN_PROGRAM_ID.parse().unwrap();
+        let user_token_account = associated_token_address_with_program(
+            &self.payer.pubkey(), &borrow_mint, &borrow_tp,
+        );
+
+        let mut instructions = Vec::new();
+
+        // Compute budget
+        let cu_limit = 1_000_000u32; // Jupiter routes can use a lot of CUs
+        instructions.push(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu_limit));
+        instructions.push(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_price(1_000));
+
+        let preceding_count = instructions.len();
+
+        // Wrap Jupiter instructions with flash loan
+        let wrapped = flash_loans::build_wrapped_instructions_direct(
+            flash_provider,
+            &self.payer,
+            borrow_mint,
+            borrow_amount,
+            user_token_account,
+            jupiter_swap_ixs,
+            preceding_count,
+        )?;
+        instructions.extend(wrapped);
+
+        if let Some(tip) = tip_ix {
+            instructions.push(tip);
+        }
+
+        let message = v0::Message::try_compile(
+            &self.payer.pubkey(),
+            &instructions,
+            alt_accounts,
+            recent_blockhash,
+        )?;
+        Ok(VersionedTransaction::try_new(
+            VersionedMessage::V0(message),
+            &[&self.payer],
+        )?)
+    }
+
     fn build_helios_instruction(
         &self,
         route: &RouteParams,
