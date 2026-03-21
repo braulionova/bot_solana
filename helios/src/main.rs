@@ -2625,7 +2625,7 @@ fn main() -> Result<()> {
                                                         .json(&serde_json::json!({
                                                             "jsonrpc":"2.0","id":1,
                                                             "method":"getLatestBlockhash",
-                                                            "params":[{"commitment":"finalized"}]
+                                                            "params":[{"commitment":"confirmed"}]
                                                         }))
                                                         .send().map_err(|e| format!("rpc: {}", e))?
                                                         .json().map_err(|e| format!("json: {}", e))?;
@@ -2687,7 +2687,7 @@ fn main() -> Result<()> {
                                                                             .json(&serde_json::json!({
                                                                                 "jsonrpc":"2.0","id":1,
                                                                                 "method":"sendTransaction",
-                                                                                "params":[tx_b64,{"encoding":"base64","skipPreflight":false}]
+                                                                                "params":[tx_b64,{"encoding":"base64","skipPreflight":true,"preflightCommitment":"processed"}]
                                                                             }))
                                                                             .send().await;
                                                                         match resp {

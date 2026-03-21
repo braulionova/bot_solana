@@ -166,6 +166,10 @@ fn extract_swap_instructions(tx_b64: &str) -> Result<Vec<Instruction>> {
         // Keep system_program for syncNative (WSOL wrapping) and token program for transfers
         // Skip pure system transfers (not syncNative)
         if program_id == system_program && cix.data.is_empty() { continue; }
+        // Skip token closeAccount (data=[9]) — interferes with Kamino flash repay position
+        if program_id == spl_token && cix.data.len() == 1 && cix.data[0] == 9 { continue; }
+        // Skip token syncNative (data=[17]) — WSOL wrapping handled by flash loan
+        if program_id == spl_token && cix.data.len() == 1 && cix.data[0] == 17 { continue; }
 
         // Skip instructions that reference ALT accounts (idx >= n_static_keys)
         let has_alt_ref = cix.accounts.iter().any(|&idx| (idx as usize) >= n_static_keys);

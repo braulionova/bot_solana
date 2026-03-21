@@ -433,8 +433,12 @@ impl TxBuilder {
         )?;
         instructions.extend(wrapped);
 
-        if let Some(tip) = tip_ix {
-            instructions.push(tip);
+        // Kamino requires flash_repay as LAST instruction — skip tip.
+        // MarginFi allows tip after end_flashloan.
+        if flash_provider != FlashProvider::Kamino {
+            if let Some(tip) = tip_ix {
+                instructions.push(tip);
+            }
         }
 
         let message = v0::Message::try_compile(
