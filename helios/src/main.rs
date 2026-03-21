@@ -2601,20 +2601,100 @@ fn main() -> Result<()> {
                                                 instructions = swap_ixs.len(),
                                                 "Jupiter swap instructions extracted, building flash TX"
                                             );
-                                            // TODO: build flash TX and send via Jito
-                                            // For now, log the opportunity
-                                            info!(
-                                                token = token_str,
-                                                profit = opp.profit_lamports,
-                                                ixs = swap_ixs.len(),
-                                                "⚡ FLASH TX READY — would send via Jito"
-                                            );
-                                        }
+
+                                            // Build flash loan TX wrapping Jupiter swap instructions
+                                            let kp_result: Result<solana_sdk::signature::Keypair, String> = (|| {
+                                                let json = std::fs::read_to_string(&wallet_path).map_err(|e| format!("read wallet: {}", e))?;
+                                                let wb: Vec<u8> = serde_json::from_str(&json).map_err(|e| format!("parse wallet: {}", e))?;
+                                                solana_sdk::signature::Keypair::from_bytes(&wb).map_err(|e| format!("keypair: {}", e))
+                                            })();
+                                            match kp_result {
+                                                Err(e) => { info!(error = %e, "Flash TX: wallet load failed"); }
+                                                Ok(kp) => {
+                                                let sim_url = std::env::var("SIM_RPC_URL")
+                                                    .unwrap_or_else(|_| "https://solana-rpc.publicnode.com".into());
+                                                let tx_builder = executor::tx_builder::TxBuilder::new(kp, &sim_url);
+
+                                                let bh_url = "https://solana-rpc.publicnode.com";
+                                                let bh_client = reqwest::blocking::Client::builder()
+                                                    .timeout(std::time::Duration::from_secs(2))
+                                                    .build().unwrap_or_else(|_| reqwest::blocking::Client::new());
+                                                let bh_result: Result<solana_sdk::hash::Hash, String> = (|| {
+                                                    let resp: serde_json::Value = bh_client
+                                                        .post(bh_url)
+                                                        .json(&serde_json::json!({
+                                                            "jsonrpc":"2.0","id":1,
+                                                            "method":"getLatestBlockhash",
+                                                            "params":[{"commitment":"finalized"}]
+                                                        }))
+                                                        .send().map_err(|e| format!("rpc: {}", e))?
+                                                        .json().map_err(|e| format!("json: {}", e))?;
+                                                    let bh_s = resp.get("result")
+                                                        .and_then(|r| r.get("value"))
+                                                        .and_then(|v| v.get("blockhash"))
+                                                        .and_then(|b| b.as_str())
+                                                        .ok_or("no blockhash field")?;
+                                                    bh_s.parse().map_err(|e| format!("parse: {}", e))
+                                                })();
+
+                                                match bh_result {
+                                                    Err(e) => { info!(error = %e, "Flash TX: blockhash failed"); }
+                                                    Ok(blockhash) => {
+                                                            // Build the flash TX
+                                                            info!("Flash TX: blockhash OK, building TX");
+                                                            match tx_builder.build_jupiter_flash_tx(
+                                                                swap_ixs,
+                                                                amount,
+                                                                market_engine::types::FlashProvider::MarginFi,
+                                                                blockhash,
+                                                                &[], // no ALTs
+                                                                None, // no tip (Jito bundle handles it)
+                                                            ) {
+                                                                Ok(tx) => {
+                                                                    let tx_size = tx.message.serialize().len();
+                                                                    info!(
+                                                                        token = token_str,
+                                                                        profit = opp.profit_lamports,
+                                                                        tx_size,
+                                                                        "⚡ FLASH TX BUILT — sending via Jito"
+                                                                    );
+
+                                                                    // Send via Jito bundle
+                                                                    let jito = executor::jito_sender::JitoSender::new(None, None);
+                                                                    let tg_send = tg.clone();
+                                                                    rt.block_on(async {
+                                                                        match jito.send_bundle(&[tx]).await {
+                                                                            Ok(bundle_id) => {
+                                                                                info!(
+                                                                                    bundle_id = %bundle_id,
+                                                                                    profit = opp.profit_lamports,
+                                                                                    "✅ JITO BUNDLE SENT"
+                                                                                );
+                                                                                tg_send.send_raw(&format!(
+                                                                                    "⚡ FLASH ARB SENT\nBundle: {}\nToken: {}\nExpected profit: {} lamports",
+                                                                                    bundle_id, token_str, opp.profit_lamports
+                                                                                )).await;
+                                                                            }
+                                                                            Err(e) => {
+                                                                                info!(error = %e, "Jito bundle send failed");
+                                                                            }
+                                                                        }
+                                                                    });
+                                                                }
+                                                                Err(e) => {
+                                                                    tracing::debug!(error = %e, "Flash TX build failed");
+                                                                }
+                                                            }
+                                                    } // match build_jupiter_flash_tx
+                                                    } // Ok(blockhash)
+                                            } // match bh_result
+                                            } // Ok(kp)
+                                        } // match kp_result
                                         Ok(_) => {
-                                            debug!("Jupiter: no swap instructions extracted");
+                                            tracing::debug!("Jupiter: no swap instructions extracted");
                                         }
                                         Err(e) => {
-                                            debug!(error = %e, "Jupiter flash: route not viable");
+                                            tracing::debug!(error = %e, "Jupiter flash: route not viable");
                                         }
                                     }
                                 }

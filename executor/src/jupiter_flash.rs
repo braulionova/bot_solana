@@ -138,10 +138,14 @@ fn extract_swap_instructions(tx_b64: &str) -> Result<Vec<Instruction>> {
     let tx: VersionedTransaction = bincode::deserialize(&tx_bytes)
         .context("deserialize tx")?;
 
-    let account_keys = match &tx.message {
+    // For V0 messages, we need static keys + ALT-resolved keys.
+    // Since we can't resolve ALTs without RPC, we use static_account_keys only
+    // and skip instructions that reference ALT indices.
+    let account_keys: Vec<Pubkey> = match &tx.message {
         VersionedMessage::Legacy(m) => m.account_keys.clone(),
         VersionedMessage::V0(m) => m.account_keys.clone(),
     };
+    let n_static_keys = account_keys.len();
 
     let compiled_ixs = match &tx.message {
         VersionedMessage::Legacy(m) => &m.instructions,
@@ -162,6 +166,13 @@ fn extract_swap_instructions(tx_b64: &str) -> Result<Vec<Instruction>> {
         // Keep system_program for syncNative (WSOL wrapping) and token program for transfers
         // Skip pure system transfers (not syncNative)
         if program_id == system_program && cix.data.is_empty() { continue; }
+
+        // Skip instructions that reference ALT accounts (idx >= n_static_keys)
+        let has_alt_ref = cix.accounts.iter().any(|&idx| (idx as usize) >= n_static_keys);
+        if has_alt_ref {
+            // Can't resolve ALT accounts without RPC — skip this instruction
+            continue;
+        }
 
         let accounts: Vec<solana_sdk::instruction::AccountMeta> = cix.accounts.iter().map(|&idx| {
             let pubkey = account_keys[idx as usize];
