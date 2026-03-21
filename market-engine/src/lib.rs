@@ -5,6 +5,7 @@ pub mod clmm_tick_arb;
 pub mod cross_dex;
 pub mod fee_tiers;
 pub mod liquidity_events;
+pub mod jupiter_arb_scanner;
 pub mod jupiter_limit_fill;
 pub mod openbook_decoder;
 pub mod opportunity_scanner;

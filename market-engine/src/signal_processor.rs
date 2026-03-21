@@ -50,6 +50,8 @@ pub struct SignalProcessor {
     direct_route_tx: Option<Sender<crate::types::RouteParams>>,
     /// ML predictive model: scores pools for imminent arb from shred patterns.
     predictive_model: Arc<crate::predictive_arb::PredictiveArbModel>,
+    /// Rate limiter for ML-triggered reactive RPC refresh (pool → last refresh time).
+    ml_refresh_cooldown: dashmap::DashMap<Pubkey, std::time::Instant>,
 }
 
 impl SignalProcessor {
@@ -69,6 +71,7 @@ impl SignalProcessor {
             shred_engine: Some(Arc::new(crate::shred_strategies::ShredStrategyEngine::new(pool_cache.clone()))),
             direct_route_tx: None,
             predictive_model: Arc::new(crate::predictive_arb::PredictiveArbModel::new(pool_cache)),
+            ml_refresh_cooldown: dashmap::DashMap::new(),
         }
     }
 
@@ -184,9 +187,34 @@ impl SignalProcessor {
                         // Re-graduation spam: insert with 0, wait for RPC refresh
                         (0u64, 0u64)
                     };
+                    // Determine DEX type from graduation source.
+                    // Moonshot/Moonit migrates to Raydium AMM V4 or Meteora (creator choice).
+                    // PumpSwap/LaunchLab migrate to PumpSwap or Raydium respectively.
+                    let grad_dex_type = match source {
+                        "Moonshot" => {
+                            // Check if the pool address looks like a Raydium AMM pool
+                            // by checking all_account_keys for the DEX program.
+                            if all_account_keys.contains(&solana_sdk::pubkey!("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")) {
+                                DexType::RaydiumAmmV4
+                            } else if all_account_keys.contains(&solana_sdk::pubkey!("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo"))
+                                   || all_account_keys.contains(&solana_sdk::pubkey!("Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB")) {
+                                DexType::MeteoraDlmm
+                            } else {
+                                DexType::RaydiumAmmV4 // default: Raydium is most common
+                            }
+                        }
+                        "LaunchLab (BONK.fun)" => DexType::RaydiumAmmV4,
+                        _ => DexType::PumpSwap,
+                    };
+                    let grad_fee_bps = match grad_dex_type {
+                        DexType::RaydiumAmmV4 => 25,
+                        DexType::MeteoraDlmm => 30,
+                        _ => 25,
+                    };
+
                     let pool = DexPool {
                         pool_address: grad.pump_pool,
-                        dex_type: DexType::PumpSwap,
+                        dex_type: grad_dex_type,
                         token_a,
                         token_b,
                         decimals_a: 9,
@@ -201,13 +229,13 @@ impl SignalProcessor {
                         market_vault_a_balance: 0,
                         market_vault_b_balance: 0,
                         last_updated: std::time::Instant::now(),
-                        fee_bps: 25,
+                        fee_bps: grad_fee_bps,
                         raydium_meta: None,
                         orca_meta: None,
                         meteora_meta: None,
                     };
                     self.pool_cache.upsert(pool);
-                    info!(%grad.pump_pool, %grad.token_mint, existing_pools, "inserted PumpSwap graduation pool into cache");
+                    info!(%grad.pump_pool, %grad.token_mint, existing_pools, ?grad_dex_type, "inserted graduation pool into cache");
 
                     // INLINE fast refresh: fetch real reserves in ~150ms via RPC
                     // This is 20x faster than the 3s background refresh.
@@ -443,11 +471,10 @@ impl SignalProcessor {
             }
 
             // ML Predictive Model: observe swap + check if pool is about to have arb.
-            {
-                let impact_est = if let Some(p) = self.pool_cache.get(&swap.pool) {
-                    let r = if swap.a_to_b { p.reserve_a } else { p.reserve_b };
-                    if r > 0 { swap.amount_in as f64 / r as f64 * 100.0 } else { 0.0 }
-                } else { 0.0 };
+            // Only for pools in cache — filters out junk (e.g. SPL Token program as pool).
+            if let Some(p) = self.pool_cache.get(&swap.pool) {
+                let r = if swap.a_to_b { p.reserve_a } else { p.reserve_b };
+                let impact_est = if r > 0 { swap.amount_in as f64 / r as f64 * 100.0 } else { 0.0 };
                 self.predictive_model.observe_swap(&swap.pool, swap.amount_in, swap.a_to_b, impact_est);
                 let pred = self.predictive_model.predict(&swap.pool);
                 if pred.alert {
@@ -457,6 +484,142 @@ impl SignalProcessor {
                         pool: swap.pool,
                         event_type: spy_node::signal_bus::LiquidityEventType::Added { amount_a: 0, amount_b: 0 },
                     }).ok();
+
+                    // REACTIVE RPC REFRESH: when ML predicts arb on a cross-DEX pool,
+                    // fetch fresh reserves for ALL pools of this token via RPC (~100-200ms).
+                    // This solves the stale-reserves problem without needing Agave Geyser.
+                    // Rate-limited: max 1 refresh per token per 5 seconds.
+                    let n_cross = pred.features[6] as u32; // n_cross_dex feature
+                    if n_cross > 0 {
+                        let wsol = solana_sdk::pubkey!("So11111111111111111111111111111111111111112");
+                        let token = if p.token_a == wsol { p.token_b } else { p.token_a };
+
+                        // Rate limit: skip if refreshed within 5 seconds
+                        let should_refresh = self.ml_refresh_cooldown.get(&token)
+                            .map_or(true, |t| t.elapsed().as_secs() >= 5);
+
+                        if should_refresh {
+                            self.ml_refresh_cooldown.insert(token, std::time::Instant::now());
+
+                            // DISCOVERY: if we have few counterparts, fetch from DexScreener
+                            // to discover pools we're missing (our cache has 2500 but real DEXes have more).
+                            let existing = self.pool_cache.pools_for_token(&token).len();
+                            if existing <= 3 {
+                                let cache_disc = self.pool_cache.clone();
+                                let token_disc = token;
+                                std::thread::spawn(move || {
+                                    discover_pools_from_dexscreener(&cache_disc, &token_disc);
+                                });
+                            }
+
+                            let mut counterparts: Vec<_> = self.pool_cache.pools_for_token(&token)
+                                .into_iter()
+                                .filter(|cp| cp.pool_address != swap.pool && cp.reserve_a > 0)
+                                .collect();
+                            // Cap at 10 counterparts — avoid spamming RPC for mega tokens
+                            // like USDT/USDC with 300+ pools. Sort by liquidity desc.
+                            counterparts.sort_by(|a, b| {
+                                let la = a.reserve_a.saturating_add(a.reserve_b);
+                                let lb = b.reserve_a.saturating_add(b.reserve_b);
+                                lb.cmp(&la)
+                            });
+                            counterparts.truncate(10);
+
+                            if !counterparts.is_empty() {
+                                info!(
+                                    slot, pool = %swap.pool, token = %token,
+                                    ml_score = format!("{:.3}", pred.score),
+                                    cross_dex = counterparts.len(),
+                                    "ML REACTIVE REFRESH: fetching fresh reserves for cross-DEX token"
+                                );
+
+                                let cache = self.pool_cache.clone();
+                                let sig_tx = self.output_tx.clone();
+                                let swap_pool = swap.pool;
+                                std::thread::spawn(move || {
+                                    use solana_rpc_client::rpc_client::RpcClient;
+                                    use solana_sdk::commitment_config::CommitmentConfig;
+                                    let rpc = RpcClient::new_with_timeout_and_commitment(
+                                        "https://solana-rpc.publicnode.com".to_string(),
+                                        std::time::Duration::from_millis(800),
+                                        CommitmentConfig::processed(),
+                                    );
+
+                                    let mut refreshed = 0u32;
+                                    for cp in &counterparts {
+                                        // Collect vault addresses from pool metadata
+                                        let mut vaults: Vec<(Pubkey, bool)> = Vec::new();
+                                        if let Some(m) = &cp.raydium_meta {
+                                            if m.vault_a != Pubkey::default() {
+                                                vaults.push((m.vault_a, true));
+                                                vaults.push((m.vault_b, false));
+                                            }
+                                        }
+                                        if let Some(m) = &cp.orca_meta {
+                                            if m.token_vault_a != Pubkey::default() {
+                                                vaults.push((m.token_vault_a, true));
+                                                vaults.push((m.token_vault_b, false));
+                                            }
+                                        }
+                                        if let Some(m) = &cp.meteora_meta {
+                                            if m.token_vault_a != Pubkey::default() {
+                                                vaults.push((m.token_vault_a, true));
+                                                vaults.push((m.token_vault_b, false));
+                                            }
+                                        }
+                                        // PumpSwap: read vaults from pool account data
+                                        if cp.dex_type == crate::types::DexType::PumpSwap && vaults.is_empty() {
+                                            if let Ok(Some(acc)) = rpc.get_account_with_commitment(
+                                                &cp.pool_address, CommitmentConfig::processed()
+                                            ).map(|r| r.value) {
+                                                if acc.data.len() >= 203 {
+                                                    let va = Pubkey::try_from(&acc.data[139..171]).unwrap_or_default();
+                                                    let vb = Pubkey::try_from(&acc.data[171..203]).unwrap_or_default();
+                                                    vaults.push((va, true));
+                                                    vaults.push((vb, false));
+                                                }
+                                            }
+                                        }
+
+                                        if vaults.is_empty() { continue; }
+
+                                        let keys: Vec<Pubkey> = vaults.iter().map(|(k,_)| *k).collect();
+                                        if let Ok(accs) = rpc.get_multiple_accounts(&keys) {
+                                            for (i, maybe) in accs.iter().enumerate() {
+                                                if let Some(acc) = maybe {
+                                                    if acc.data.len() >= 72 {
+                                                        let amount = u64::from_le_bytes(
+                                                            acc.data[64..72].try_into().unwrap_or([0u8;8])
+                                                        );
+                                                        if cache.update_reserve_by_vault(&cp.pool_address, vaults[i].1, amount) {
+                                                            refreshed += 1;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if refreshed > 0 {
+                                        // Trigger route engine re-scan with fresh data
+                                        sig_tx.send(spy_node::signal_bus::SpySignal::LiquidityEvent {
+                                            slot: 0,
+                                            pool: swap_pool,
+                                            event_type: spy_node::signal_bus::LiquidityEventType::Added {
+                                                amount_a: 0, amount_b: 0,
+                                            },
+                                        }).ok();
+                                        tracing::info!(
+                                            pool = %swap_pool,
+                                            refreshed,
+                                            counterparts = counterparts.len(),
+                                            "ML REACTIVE: fresh reserves loaded → route engine re-scan"
+                                        );
+                                    }
+                                });
+                            }
+                        }
+                    }
                 }
             }
 
@@ -769,5 +932,130 @@ fn extract_program_ids(tx: &VersionedTransaction) -> Vec<Pubkey> {
             .iter()
             .map(|ix| msg.account_keys[ix.program_id_index as usize])
             .collect(),
+    }
+}
+
+/// Discover new pools for a token from DexScreener API and add to cache.
+/// This fills the gap where our cache has 2500 pools but major tokens have 20+ pools.
+fn discover_pools_from_dexscreener(cache: &Arc<PoolStateCache>, token: &Pubkey) {
+    use crate::pool_state::DexPool;
+    use solana_sdk::pubkey::Pubkey as Pk;
+
+    let url = format!(
+        "https://api.dexscreener.com/latest/dex/tokens/{}",
+        token
+    );
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build();
+    let client = match client {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let resp = match client.get(&url).send() {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let body: serde_json::Value = match resp.json() {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let wsol: Pk = solana_sdk::pubkey!("So11111111111111111111111111111111111111112");
+    let mut added = 0u32;
+
+    if let Some(pairs) = body.get("pairs").and_then(|p| p.as_array()) {
+        for pair in pairs {
+            let chain = pair.get("chainId").and_then(|c| c.as_str()).unwrap_or("");
+            if chain != "solana" { continue; }
+
+            let pool_addr_str = match pair.get("pairAddress").and_then(|p| p.as_str()) {
+                Some(s) => s,
+                None => continue,
+            };
+            let pool_addr: Pk = match pool_addr_str.parse() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            // Skip if already in cache
+            if cache.get(&pool_addr).is_some() { continue; }
+
+            let dex_id = pair.get("dexId").and_then(|d| d.as_str()).unwrap_or("");
+            let dex_type = match dex_id {
+                "raydium" => DexType::RaydiumAmmV4,
+                "orca" => DexType::OrcaWhirlpool,
+                "meteora" => DexType::MeteoraDlmm,
+                "pumpswap" => DexType::PumpSwap,
+                _ => continue, // skip unknown DEXes
+            };
+
+            let liq = pair.get("liquidity")
+                .and_then(|l| l.get("usd"))
+                .and_then(|u| u.as_f64())
+                .unwrap_or(0.0);
+            // Only add pools with >$100 liquidity
+            if liq < 100.0 { continue; }
+
+            let base_addr = pair.get("baseToken")
+                .and_then(|t| t.get("address"))
+                .and_then(|a| a.as_str())
+                .unwrap_or("");
+            let quote_addr = pair.get("quoteToken")
+                .and_then(|t| t.get("address"))
+                .and_then(|a| a.as_str())
+                .unwrap_or("");
+
+            let token_a: Pk = base_addr.parse().unwrap_or_default();
+            let token_b: Pk = quote_addr.parse().unwrap_or_default();
+            if token_a == Pk::default() || token_b == Pk::default() { continue; }
+
+            // Estimate reserves from liquidity (rough: half SOL, half token)
+            // Real reserves will be fetched by ML reactive refresh
+            let sol_price = 135.0; // approximate
+            let est_sol = (liq / 2.0 / sol_price * 1e9) as u64;
+            let (ra, rb) = if token_a == wsol { (est_sol, est_sol) }
+                          else if token_b == wsol { (est_sol, est_sol) }
+                          else { (est_sol, est_sol) };
+
+            let pool = DexPool {
+                pool_address: pool_addr,
+                dex_type,
+                token_a,
+                token_b,
+                decimals_a: 9,
+                decimals_b: 9,
+                reserve_a: ra,
+                reserve_b: rb,
+                reserve_a_optimistic: 0,
+                reserve_b_optimistic: 0,
+                last_shred_update: std::time::Instant::now(),
+                pool_vault_a_balance: 0,
+                pool_vault_b_balance: 0,
+                market_vault_a_balance: 0,
+                market_vault_b_balance: 0,
+                last_updated: std::time::Instant::now(),
+                fee_bps: match dex_type {
+                    DexType::RaydiumAmmV4 => 25,
+                    DexType::OrcaWhirlpool => 30,
+                    DexType::MeteoraDlmm => 30,
+                    DexType::PumpSwap => 25,
+                    _ => 30,
+                },
+                raydium_meta: None,
+                orca_meta: None,
+                meteora_meta: None,
+            };
+            cache.upsert(pool);
+            added += 1;
+        }
+    }
+
+    if added > 0 {
+        tracing::info!(
+            token = %token,
+            added,
+            "DexScreener DISCOVERY: new pools added to cache"
+        );
     }
 }

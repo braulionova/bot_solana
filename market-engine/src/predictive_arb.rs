@@ -220,16 +220,20 @@ impl PredictiveArbModel {
         let alert = score > 0.6 && (n_cross > 0.0 || burst > 5.0);
         if alert {
             self.alerts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            info!(
-                pool = %pool,
-                score = format!("{:.3}", score),
-                velocity,
-                burst = burst as u32,
-                imbalance = format!("{:.2}", imbalance),
-                vol_spike = format!("{:.1}", vol_spike),
-                cross_dex = n_cross as u32,
-                "🧠 ML PREDICTION: high arb probability"
-            );
+            // Only log cross-DEX alerts (those trigger reactive RPC refresh).
+            // Single-DEX alerts are noise without counterparts to arb against.
+            if n_cross > 0.0 {
+                info!(
+                    pool = %pool,
+                    score = format!("{:.3}", score),
+                    velocity,
+                    burst = burst as u32,
+                    imbalance = format!("{:.2}", imbalance),
+                    vol_spike = format!("{:.1}", vol_spike),
+                    cross_dex = n_cross as u32,
+                    "🧠 ML PREDICTION: cross-DEX arb opportunity"
+                );
+            }
         }
 
         ArbPrediction { pool: *pool, score, features, alert }

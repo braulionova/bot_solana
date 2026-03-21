@@ -274,6 +274,9 @@ pub struct RouteEngine {
     last_total_pools: std::sync::atomic::AtomicUsize,
     /// Last observed pools added to graph (for diagnostics).
     last_pools_in_graph: std::sync::atomic::AtomicUsize,
+    /// Blacklist for BF cycles that failed re-quote. Keyed by sorted pool set.
+    /// Prevents re-evaluating the same phantom cycle every second.
+    rejected_cycles: Mutex<HashMap<Vec<Pubkey>, Instant>>,
 }
 
 /// Persistent graph that avoids full rebuild every BF run.
@@ -296,6 +299,7 @@ impl RouteEngine {
             route_cache: Mutex::new(RouteCache::empty()),
             last_total_pools: std::sync::atomic::AtomicUsize::new(0),
             last_pools_in_graph: std::sync::atomic::AtomicUsize::new(0),
+            rejected_cycles: Mutex::new(HashMap::new()),
         }
     }
 
@@ -524,9 +528,43 @@ impl RouteEngine {
         let mut bf_rejected_profit = 0u32;
         let mut bf_rejected_maxreturn = 0u32;
 
+        // Prune expired blacklist entries (>10s old).
+        {
+            let mut bl = self.rejected_cycles.lock().unwrap();
+            bl.retain(|_, t| t.elapsed().as_secs() < 10);
+        }
+
         for &start in &start_nodes {
             if let Some(cycle_nodes) = find_negative_cycle(&weight_graph, start) {
                 bf_raw_cycles += 1;
+
+                // Build a canonical key for this cycle (sorted pool set from edges).
+                let cycle_key: Vec<Pubkey> = {
+                    let mut pools: Vec<Pubkey> = Vec::new();
+                    for w in cycle_nodes.windows(2) {
+                        if let Some(edge) = tg.graph.find_edge(w[0], w[1]) {
+                            pools.push(tg.graph[edge].pool);
+                        }
+                    }
+                    // Close the cycle
+                    if cycle_nodes.len() >= 2 {
+                        if let Some(edge) = tg.graph.find_edge(*cycle_nodes.last().unwrap(), cycle_nodes[0]) {
+                            pools.push(tg.graph[edge].pool);
+                        }
+                    }
+                    pools.sort();
+                    pools
+                };
+
+                // Skip if this cycle was recently rejected (blacklisted for 10s).
+                if !cycle_key.is_empty() {
+                    let bl = self.rejected_cycles.lock().unwrap();
+                    if bl.contains_key(&cycle_key) {
+                        trace!("skipping blacklisted BF cycle ({} pools)", cycle_key.len());
+                        continue;
+                    }
+                }
+
                 // Try each borrow amount — different scales can be profitable.
                 let mut best_route: Option<RouteParams> = None;
                 let mut any_passed_requote = false;
@@ -549,6 +587,10 @@ impl RouteEngine {
                 }
                 if !any_passed_requote {
                     bf_rejected_requote += 1;
+                    // Blacklist this cycle for 10 seconds to stop repeated re-evaluation.
+                    if !cycle_key.is_empty() {
+                        self.rejected_cycles.lock().unwrap().insert(cycle_key, Instant::now());
+                    }
                 }
                 if let Some(route) = best_route {
                     info!(

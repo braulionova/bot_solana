@@ -2488,6 +2488,149 @@ fn main() -> Result<()> {
     }
 
     // -----------------------------------------------------------------------
+    // 9b. Jupiter Cross-DEX Arb Scanner (continuous background scan)
+    // -----------------------------------------------------------------------
+    {
+        let jup_key = std::env::var("JUPITER_API_KEY").unwrap_or_default();
+        if !jup_key.is_empty() {
+            let pc = pool_cache.clone();
+            let sig_tx_jup = sig_tx.clone();
+            let jup_key_2 = std::env::var("JUPITER_API_KEY_2").unwrap_or_default();
+            let wallet_path = std::env::var("WALLET_PATH")
+                .unwrap_or_else(|_| "/root/solana-bot/wallet.json".into());
+            thread::Builder::new()
+                .name("jupiter-arb-scanner".into())
+                .spawn(move || {
+                    // Wait for pool cache to be populated
+                    thread::sleep(Duration::from_secs(30));
+                    let scanner = market_engine::jupiter_arb_scanner::JupiterArbScanner::new(
+                        jup_key.clone(), pc,
+                    );
+
+                    // Initialize Ultra executor for live arb execution
+                    let ultra = if !jup_key_2.is_empty() {
+                        match std::fs::read_to_string(&wallet_path) {
+                            Ok(key_json) => {
+                                match serde_json::from_str::<Vec<u8>>(&key_json) {
+                                    Ok(key_bytes) => {
+                                        match solana_sdk::signature::Keypair::from_bytes(&key_bytes) {
+                                            Ok(kp) => {
+                                                info!(wallet = %kp.pubkey(), "Ultra executor initialized");
+                                                Some(Arc::new(executor::ultra_executor::UltraExecutor::new(
+                                                    jup_key.clone(), jup_key_2, kp,
+                                                )))
+                                            }
+                                            Err(e) => { warn!("Ultra: bad keypair: {}", e); None }
+                                        }
+                                    }
+                                    Err(e) => { warn!("Ultra: parse wallet: {}", e); None }
+                                }
+                            }
+                            Err(e) => { warn!("Ultra: read wallet {}: {}", wallet_path, e); None }
+                        }
+                    } else { None };
+
+                    info!(ultra_enabled = ultra.is_some(), "jupiter-arb-scanner started");
+
+                    // Use small amounts to limit risk (our balance is ~1.95 SOL)
+                    let borrow_amounts = [
+                        50_000_000u64,    // 0.05 SOL
+                        100_000_000,      // 0.1 SOL
+                        500_000_000,      // 0.5 SOL
+                    ];
+
+                    // Tokio runtime for Ultra async execution
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("tokio rt jupiter-scanner");
+
+                    let tg = executor::telegram::TelegramBot::from_env();
+                    let min_profit = std::env::var("ULTRA_MIN_PROFIT_LAMPORTS")
+                        .ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(500_000); // 0.0005 SOL min
+
+                    loop {
+                        let targets = scanner.get_scan_targets();
+                        let n_targets = targets.len();
+                        let mut found = 0u32;
+
+                        for token in &targets {
+                            if let Some(opp) = scanner.scan_token(token, &borrow_amounts) {
+                                found += 1;
+
+                                // Execute via Ultra if profitable enough
+                                if let Some(ref ultra) = ultra {
+                                    if opp.profit_lamports > min_profit && opp.borrow_amount <= 500_000_000 {
+                                        let token_str = opp.token.to_string();
+                                        let amount = opp.borrow_amount;
+                                        let ultra_c = ultra.clone();
+                                        let tg_c = tg.clone();
+
+                                        info!(
+                                            token = %opp.token,
+                                            amount,
+                                            expected_profit = opp.profit_lamports,
+                                            "🚀 ULTRA EXECUTE: attempting arb"
+                                        );
+
+                                        rt.block_on(async {
+                                            match ultra_c.execute_arb(&token_str, amount).await {
+                                                Ok((buy_sig, sell_sig, profit)) => {
+                                                    info!(
+                                                        buy = %buy_sig, sell = %sell_sig,
+                                                        profit, "✅ ULTRA ARB SUCCESS"
+                                                    );
+                                                    let msg = format!(
+                                                        "✅ ULTRA ARB SUCCESS\nProfit: {} lamports ({:.4} SOL)\nBuy: {}\nSell: {}\nToken: {}",
+                                                        profit, profit as f64 / 1e9, buy_sig, sell_sig, token_str
+                                                    );
+                                                    tg_c.send_raw(&msg).await;
+                                                }
+                                                Err(e) => {
+                                                    warn!(error = %e, "Ultra arb failed");
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+
+                                sig_tx_jup.send(spy_node::signal_bus::SpySignal::LiquidityEvent {
+                                    slot: 0,
+                                    pool: Pubkey::default(),
+                                    event_type: spy_node::signal_bus::LiquidityEventType::Added {
+                                        amount_a: 0, amount_b: 0,
+                                    },
+                                }).ok();
+                            }
+                            // Rate limit: ~200ms between API calls
+                            thread::sleep(Duration::from_millis(200));
+                        }
+
+                        let (scans, opps) = (
+                            scanner.scans.load(std::sync::atomic::Ordering::Relaxed),
+                            scanner.opportunities.load(std::sync::atomic::Ordering::Relaxed),
+                        );
+                        let best = scanner.best_profit.load(std::sync::atomic::Ordering::Relaxed);
+                        info!(
+                            targets = n_targets,
+                            found,
+                            total_scans = scans,
+                            total_opportunities = opps,
+                            best_profit_lamports = best,
+                            "jupiter-arb-scanner: scan cycle complete"
+                        );
+
+                        // Sleep between full cycles
+                        thread::sleep(Duration::from_secs(10));
+                    }
+                })?;
+            info!("Jupiter arb scanner started (API key configured)");
+        } else {
+            info!("Jupiter arb scanner DISABLED (no JUPITER_API_KEY)");
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // 10. Liquidation Monitor (Phase A — detection only)
     // -----------------------------------------------------------------------
     {

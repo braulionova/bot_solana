@@ -72,6 +72,10 @@ const LAUNCHLAB_MIGRATE_CPSWAP_DISC: [u8; 8] = [136, 92, 200, 103, 28, 218, 144,
 const MOONSHOT_MIGRATE_CAMEL_DISC: [u8; 8] = [252, 23, 149, 132, 146, 87, 69, 198];
 /// Moonshot: migrate_funds — snake_case variant (sha256("global:migrate_funds")[..8]).
 const MOONSHOT_MIGRATE_SNAKE_DISC: [u8; 8] = [42, 229, 10, 231, 189, 62, 193, 174];
+/// Moonit: migrate_meteora_damm (sha256("global:migrate_meteora_damm")[..8]).
+const MOONIT_MIGRATE_METEORA_DISC: [u8; 8] = [27, 1, 48, 22, 180, 63, 118, 217];
+/// Moonit: migration_damm_v2 (sha256("global:migration_damm_v2")[..8]).
+const MOONIT_MIGRATION_DAMM_V2_DISC: [u8; 8] = [156, 169, 230, 103, 53, 228, 80, 64];
 
 /// FluxBeam swap: standard AMM swap instruction (discriminator byte 1).
 const FLUXBEAM_SWAP_DISC: u8 = 1;
@@ -346,19 +350,47 @@ pub fn detect_graduation(tx: &VersionedTransaction) -> Option<GraduationEvent> {
             }
         }
 
-        // Moonshot migration → DEX pool.
+        // Moonshot/Moonit migration → Raydium AMM V4 or Meteora DAMM v2.
+        // Creator chooses destination DEX at launch. The pool is created via CPI
+        // during migration, so we scan the TX account list for the destination DEX
+        // program to determine which pool was created.
         if prog == PK_MOONSHOT && data.len() >= 8
-            && (data[..8] == MOONSHOT_MIGRATE_CAMEL_DISC || data[..8] == MOONSHOT_MIGRATE_SNAKE_DISC)
+            && (data[..8] == MOONSHOT_MIGRATE_CAMEL_DISC || data[..8] == MOONSHOT_MIGRATE_SNAKE_DISC
+                || data[..8] == MOONIT_MIGRATE_METEORA_DISC || data[..8] == MOONIT_MIGRATION_DAMM_V2_DISC)
         {
-            // Moonshot migrateFunds accounts layout:
-            // [0] = sender/authority, [1] = token_mint, [2] = curve_account, ...
-            // The destination pool address depends on which DEX Moonshot migrates to;
-            // we use curve_account as a proxy (the pool gets created in CPI).
+            // Moonshot migrateFunds accounts:
+            // [0] = sender/authority, [1] = token_mint, [2] = curve_account,
+            // [3..] = destination DEX accounts (varies by Raydium vs Meteora)
             let token_mint = accounts.get(*acc_indices.get(1)? as usize).copied()?;
-            let pump_pool = accounts.get(*acc_indices.get(2)? as usize).copied()?;
+
+            // Try to find the actual DEX pool created by CPI:
+            // Scan all accounts in the instruction for a Raydium AMM or Meteora program.
+            // The pool account is typically at index 3 or 4 depending on the layout.
+            let mut dest_pool = accounts.get(*acc_indices.get(2)? as usize).copied()?; // fallback: curve_account
+            let mut _dest_dex = "unknown";
+            for idx in acc_indices.iter().skip(3) {
+                if let Some(&acc) = accounts.get(*idx as usize) {
+                    if acc == PK_RAYDIUM_V4 {
+                        _dest_dex = "raydium_v4";
+                        // Raydium AMM pool is typically 2 accounts before the program
+                        // Try the account at index 3 as the pool
+                        if let Some(&pool_acc) = accounts.get(*acc_indices.get(3)? as usize) {
+                            dest_pool = pool_acc;
+                        }
+                        break;
+                    } else if acc == PK_METEORA || acc == PK_METEORA_DYN {
+                        _dest_dex = "meteora";
+                        if let Some(&pool_acc) = accounts.get(*acc_indices.get(3)? as usize) {
+                            dest_pool = pool_acc;
+                        }
+                        break;
+                    }
+                }
+            }
+
             return Some(GraduationEvent {
                 token_mint,
-                pump_pool,
+                pump_pool: dest_pool,
                 creator: None,
                 pool_base_mint: None,
                 pool_quote_mint: None,
