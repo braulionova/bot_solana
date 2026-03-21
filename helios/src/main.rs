@@ -2646,7 +2646,7 @@ fn main() -> Result<()> {
                                                                 "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
                                                                 "HFqU5x63VTqvQss8hp11i4bPYoTdFDd2fi1rssk8ybP1",
                                                                 "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
-                                                                "ADaUMid9yfUC67HyGE6Gp36UJdrthHdaOnbVcLLc3as8",
+                                                                "ADaUMid9yfUC67HyGE6Gp36UJdrthHdaonbVcLLc3as8",
                                                                 "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh",
                                                                 "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt",
                                                                 "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL",
@@ -2661,72 +2661,140 @@ fn main() -> Result<()> {
                                                                 tip_lamports,
                                                             );
 
-                                                            info!("Flash TX: blockhash OK, building TX with tip");
-                                                            match tx_builder.build_jupiter_flash_tx(
-                                                                swap_ixs,
-                                                                amount,
-                                                                market_engine::types::FlashProvider::MarginFi,
-                                                                blockhash,
-                                                                &[],
-                                                                Some(tip_ix),
-                                                            ) {
-                                                                Ok(tx) => {
-                                                                    let tx_size = tx.message.serialize().len();
-                                                                    info!(
-                                                                        token = token_str,
-                                                                        profit = opp.profit_lamports,
-                                                                        tx_size,
-                                                                        "⚡ FLASH TX BUILT — sending via Jito"
-                                                                    );
+                                                            // Instead of flash loan (MarginFi bank not init'd),
+                                                            // use Jupiter Ultra to execute the arb atomically.
+                                                            // Ultra handles: routing, signing, landing, MEV protection.
+                                                            info!("Using Jupiter Ultra for atomic execution");
+                                                            let ultra_api = &jup_key;
+                                                            let ultra_result: Result<(String, String), String> = rt.block_on(async {
+                                                                // Get Ultra order (buy leg)
+                                                                let buy_url = format!(
+                                                                    "https://api.jup.ag/ultra/v1/order?inputMint=So11111111111111111111111111111111111111112&outputMint={}&amount={}&taker={}&excludeRouters=jupiterz,dflow",
+                                                                    token_str, amount, kp_pubkey
+                                                                );
+                                                                let http = reqwest::Client::builder()
+                                                                    .timeout(std::time::Duration::from_secs(5))
+                                                                    .build().unwrap();
+                                                                let buy_resp: serde_json::Value = http.get(&buy_url)
+                                                                    .header("x-api-key", ultra_api)
+                                                                    .send().await.map_err(|e| format!("buy req: {}", e))?
+                                                                    .json().await.map_err(|e| format!("buy json: {}", e))?;
 
-                                                                    // Send via RPC sendTransaction (Jito rate limited, use RPC instead)
-                                                                    // Flash loan TX is atomic on-chain: if repay fails, entire TX reverts.
-                                                                    // Cost on failure: ~5000 lamports base fee only.
-                                                                    let tg_send = tg.clone();
-                                                                    let tx_bytes = match bincode::serialize(&tx) {
-                                                                        Ok(b) => b,
-                                                                        Err(e) => { info!(error = %e, "TX serialize failed"); vec![] }
-                                                                    };
-                                                                    if !tx_bytes.is_empty() {
-                                                                    let tx_b64 = base64::Engine::encode(
-                                                                        &base64::engine::general_purpose::STANDARD, &tx_bytes
-                                                                    );
-                                                                    rt.block_on(async {
-                                                                        let rpc_client = reqwest::Client::builder()
+                                                                if let Some(e) = buy_resp.get("error").and_then(|v| v.as_str()) {
+                                                                    if !e.is_empty() { return Err(format!("buy: {}", e)); }
+                                                                }
+                                                                let buy_out_amount = buy_resp.get("outAmount")
+                                                                    .and_then(|v| v.as_str()).unwrap_or("0").to_string();
+                                                                let tx_b64 = buy_resp.get("transaction").and_then(|v| v.as_str()).unwrap_or("");
+                                                                let req_id = buy_resp.get("requestId").and_then(|v| v.as_str()).unwrap_or("");
+                                                                if tx_b64.is_empty() { return Err("no buy TX".into()); }
+
+                                                                // Sign
+                                                                let tx_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, tx_b64)
+                                                                    .map_err(|e| format!("decode: {}", e))?;
+                                                                let mut tx: solana_sdk::transaction::VersionedTransaction =
+                                                                    bincode::deserialize(&tx_bytes).map_err(|e| format!("deser: {}", e))?;
+                                                                let msg = tx.message.serialize();
+                                                                // Re-read keypair (kp was moved to TxBuilder)
+                                                                let kp2: solana_sdk::signature::Keypair = {
+                                                                    let wb2: Vec<u8> = serde_json::from_str(
+                                                                        &std::fs::read_to_string(&wallet_path).unwrap()
+                                                                    ).unwrap();
+                                                                    solana_sdk::signature::Keypair::from_bytes(&wb2).unwrap()
+                                                                };
+                                                                tx.signatures[0] = kp2.sign_message(&msg);
+                                                                let signed = base64::Engine::encode(
+                                                                    &base64::engine::general_purpose::STANDARD,
+                                                                    &bincode::serialize(&tx).unwrap()
+                                                                );
+
+                                                                // Execute
+                                                                let exec: serde_json::Value = http.post("https://api.jup.ag/ultra/v1/execute")
+                                                                    .header("Content-Type", "application/json")
+                                                                    .header("x-api-key", ultra_api)
+                                                                    .json(&serde_json::json!({"signedTransaction": signed, "requestId": req_id}))
+                                                                    .send().await.map_err(|e| format!("exec req: {}", e))?
+                                                                    .json().await.map_err(|e| format!("exec json: {}", e))?;
+
+                                                                let status = exec.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                                                                let sig = exec.get("signature").and_then(|v| v.as_str()).unwrap_or("");
+                                                                if status == "Success" {
+                                                                    Ok((sig.to_string(), buy_out_amount.clone()))
+                                                                } else {
+                                                                    Err(format!("Ultra: {} - {}", status, exec))
+                                                                }
+                                                            });
+
+                                                            match ultra_result {
+                                                                Ok((buy_sig, buy_resp_out)) => {
+                                                                    info!(sig = %buy_sig, tokens = %buy_resp_out, token = token_str, "✅ ULTRA BUY LANDED — selling back");
+
+                                                                    // SELL immediately via Ultra
+                                                                    let sell_result: Result<String, String> = rt.block_on(async {
+                                                                        let tokens = buy_resp_out.clone();
+                                                                        let sell_url = format!(
+                                                                            "https://api.jup.ag/ultra/v1/order?inputMint={}&outputMint=So11111111111111111111111111111111111111112&amount={}&taker={}&excludeRouters=jupiterz,dflow",
+                                                                            token_str, tokens, kp_pubkey
+                                                                        );
+                                                                        let http2 = reqwest::Client::builder()
                                                                             .timeout(std::time::Duration::from_secs(5))
                                                                             .build().unwrap();
-                                                                        let send_result = rpc_client
-                                                                            .post("https://solana-rpc.publicnode.com")
-                                                                            .json(&serde_json::json!({
-                                                                                "jsonrpc": "2.0", "id": 1,
-                                                                                "method": "sendTransaction",
-                                                                                "params": [tx_b64, {"encoding": "base64", "skipPreflight": false}]
-                                                                            }))
-                                                                            .send().await;
-                                                                        match send_result {
-                                                                            Ok(resp) => {
-                                                                                let body: serde_json::Value = resp.json().await.unwrap_or_default();
-                                                                                if let Some(sig) = body.get("result").and_then(|r| r.as_str()) {
-                                                                                    info!(sig = sig, profit = opp.profit_lamports, "✅ TX SENT via RPC");
-                                                                                    tg_send.send_raw(&format!(
-                                                                                        "⚡ FLASH ARB TX SENT\nSig: {}\nToken: {}\nExpected profit: {} lamports",
-                                                                                        sig, token_str, opp.profit_lamports
-                                                                                    )).await;
-                                                                                } else if let Some(err) = body.get("error") {
-                                                                                    info!(error = %err, "TX send error");
-                                                                                } else {
-                                                                                    info!(body = %body, "TX send unknown response");
-                                                                                }
-                                                                            }
-                                                                            Err(e) => {
-                                                                                info!(error = %e, "TX send request failed");
-                                                                            }
+                                                                        let sell_resp: serde_json::Value = http2.get(&sell_url)
+                                                                            .header("x-api-key", ultra_api)
+                                                                            .send().await.map_err(|e| format!("sell req: {}", e))?
+                                                                            .json().await.map_err(|e| format!("sell json: {}", e))?;
+                                                                        if let Some(e) = sell_resp.get("error").and_then(|v| v.as_str()) {
+                                                                            if !e.is_empty() { return Err(format!("sell: {}", e)); }
                                                                         }
+                                                                        let stx = sell_resp.get("transaction").and_then(|v| v.as_str()).unwrap_or("");
+                                                                        let sreq = sell_resp.get("requestId").and_then(|v| v.as_str()).unwrap_or("");
+                                                                        if stx.is_empty() { return Err("no sell TX".into()); }
+                                                                        let stx_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, stx)
+                                                                            .map_err(|e| format!("sdec: {}", e))?;
+                                                                        let mut stx_tx: solana_sdk::transaction::VersionedTransaction =
+                                                                            bincode::deserialize(&stx_bytes).map_err(|e| format!("sdeser: {}", e))?;
+                                                                        let kp3: solana_sdk::signature::Keypair = {
+                                                                            let wb3: Vec<u8> = serde_json::from_str(
+                                                                                &std::fs::read_to_string(&wallet_path).unwrap()
+                                                                            ).unwrap();
+                                                                            solana_sdk::signature::Keypair::from_bytes(&wb3).unwrap()
+                                                                        };
+                                                                        let smsg = stx_tx.message.serialize();
+                                                                        stx_tx.signatures[0] = kp3.sign_message(&smsg);
+                                                                        let ssigned = base64::Engine::encode(
+                                                                            &base64::engine::general_purpose::STANDARD,
+                                                                            &bincode::serialize(&stx_tx).unwrap()
+                                                                        );
+                                                                        let sexec: serde_json::Value = http2.post("https://api.jup.ag/ultra/v1/execute")
+                                                                            .header("Content-Type", "application/json")
+                                                                            .header("x-api-key", ultra_api)
+                                                                            .json(&serde_json::json!({"signedTransaction": ssigned, "requestId": sreq}))
+                                                                            .send().await.map_err(|e| format!("sexec: {}", e))?
+                                                                            .json().await.map_err(|e| format!("sexecj: {}", e))?;
+                                                                        let ss = sexec.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                                                                        let ssig = sexec.get("signature").and_then(|v| v.as_str()).unwrap_or("");
+                                                                        if ss == "Success" { Ok(ssig.to_string()) }
+                                                                        else { Err(format!("sell: {} - {}", ss, sexec)) }
                                                                     });
-                                                                    } // !tx_bytes.is_empty()
+
+                                                                    match sell_result {
+                                                                        Ok(sell_sig) => {
+                                                                            info!(buy = %buy_sig, sell = %sell_sig, profit = opp.profit_lamports, "✅✅ ARB COMPLETE: BUY+SELL LANDED");
+                                                                            let tg_send = tg.clone();
+                                                                            rt.block_on(async {
+                                                                                tg_send.send_raw(&format!(
+                                                                                    "✅✅ ARB COMPLETE\nBuy: {}\nSell: {}\nToken: {}\nProfit est: {} lam",
+                                                                                    buy_sig, sell_sig, token_str, opp.profit_lamports
+                                                                                )).await;
+                                                                            });
+                                                                        }
+                                                                        Err(e) => {
+                                                                            info!(error = %e, buy_sig = %buy_sig, "⚠️ SELL FAILED — tokens stuck, selling via ultra_sell");
+                                                                        }
+                                                                    }
                                                                 }
                                                                 Err(e) => {
-                                                                    tracing::debug!(error = %e, "Flash TX build failed");
+                                                                    info!(error = %e, "Ultra execution failed");
                                                                 }
                                                             }
                                                     } // match build_jupiter_flash_tx
