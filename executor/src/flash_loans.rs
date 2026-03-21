@@ -217,11 +217,57 @@ pub fn build_wrapped_instructions_direct(
         }
         // For other providers, combine swap IXs into a single "helios_ix" equivalent
         // by building them sequentially. Only MarginFi supports multi-IX flash loans natively.
+        FlashProvider::Kamino => {
+            // Kamino: [borrow, swap0..swapN, repay]
+            // Kamino repay references the borrow instruction index.
+            let cfg = resolve_kamino_config(borrow_mint)?;
+            let program_id: Pubkey = KAMINO_PROGRAM_ID.parse().unwrap();
+            let token_program: Pubkey = TOKEN_PROGRAM_ID.parse().unwrap();
+            let (market_authority, _) =
+                Pubkey::find_program_address(&[b"lma", cfg.lending_market.as_ref()], &program_id);
+
+            let mut borrow_data = vec![135, 231, 52, 167, 7, 52, 212, 193];
+            borrow_data.extend_from_slice(&borrow_amount.to_le_bytes());
+
+            let kamino_accounts = vec![
+                AccountMeta::new_readonly(payer.pubkey(), true),
+                AccountMeta::new_readonly(market_authority, false),
+                AccountMeta::new_readonly(cfg.lending_market, false),
+                AccountMeta::new(cfg.reserve, false),
+                AccountMeta::new_readonly(borrow_mint, false),
+                AccountMeta::new(cfg.liquidity_supply, false),
+                AccountMeta::new(user_token_account, false),
+                AccountMeta::new(cfg.fee_vault, false),
+                AccountMeta::new_readonly(program_id, false),
+                AccountMeta::new_readonly(program_id, false),
+                AccountMeta::new_readonly(sysvar::instructions::id(), false),
+                AccountMeta::new_readonly(token_program, false),
+            ];
+
+            let borrow_ix = Instruction {
+                program_id,
+                accounts: kamino_accounts.clone(),
+                data: borrow_data,
+            };
+
+            let borrow_ix_index = preceding_ix_count as u8;
+            let mut repay_data = vec![185, 117, 0, 203, 96, 245, 180, 186];
+            repay_data.extend_from_slice(&borrow_amount.to_le_bytes());
+            repay_data.push(borrow_ix_index);
+
+            let repay_ix = Instruction {
+                program_id,
+                accounts: kamino_accounts,
+                data: repay_data,
+            };
+
+            let mut ixs = vec![borrow_ix];
+            ixs.extend(swap_ixs);
+            ixs.push(repay_ix);
+            Ok(ixs)
+        }
         _ => {
-            // For non-MarginFi: wrap all swap IXs as sequential instructions
-            // after the flash borrow, before the flash repay.
-            // This works because Solend/Kamino check the end instruction index.
-            bail!("Direct swap mode only supports MarginFi flash loans (0% fee). Use helios-arb for {:?}", provider);
+            bail!("Direct swap mode not supported for {:?}", provider);
         }
     }
 }

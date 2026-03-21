@@ -2661,12 +2661,61 @@ fn main() -> Result<()> {
                                                                 tip_lamports,
                                                             );
 
-                                                            // Instead of flash loan (MarginFi bank not init'd),
-                                                            // use Jupiter Ultra to execute the arb atomically.
-                                                            // Ultra handles: routing, signing, landing, MEV protection.
-                                                            info!("Using Jupiter Ultra for atomic execution");
+                                                            // MarginFi SOL bank is NOW INITIALIZED.
+                                                            // Build flash loan TX: [borrow SOL → Jupiter swaps → repay SOL]
+                                                            info!("Building Kamino flash loan TX");
+                                                            match tx_builder.build_jupiter_flash_tx(
+                                                                swap_ixs,
+                                                                amount,
+                                                                market_engine::types::FlashProvider::Kamino,
+                                                                blockhash,
+                                                                &[],
+                                                                Some(tip_ix),
+                                                            ) {
+                                                                Ok(tx) => {
+                                                                    info!(tx_size = tx.message.serialize().len(), "⚡ FLASH TX BUILT — sending via RPC");
+                                                                    let tx_bytes = bincode::serialize(&tx).unwrap_or_default();
+                                                                    let tx_b64 = base64::Engine::encode(
+                                                                        &base64::engine::general_purpose::STANDARD, &tx_bytes
+                                                                    );
+                                                                    let tg_send = tg.clone();
+                                                                    rt.block_on(async {
+                                                                        let rpc = reqwest::Client::builder()
+                                                                            .timeout(std::time::Duration::from_secs(5))
+                                                                            .build().unwrap();
+                                                                        let resp = rpc.post("https://solana-rpc.publicnode.com")
+                                                                            .json(&serde_json::json!({
+                                                                                "jsonrpc":"2.0","id":1,
+                                                                                "method":"sendTransaction",
+                                                                                "params":[tx_b64,{"encoding":"base64","skipPreflight":false}]
+                                                                            }))
+                                                                            .send().await;
+                                                                        match resp {
+                                                                            Ok(r) => {
+                                                                                let body: serde_json::Value = r.json().await.unwrap_or_default();
+                                                                                if let Some(sig) = body.get("result").and_then(|v| v.as_str()) {
+                                                                                    info!(sig, profit = opp.profit_lamports, "✅ FLASH ARB TX SENT");
+                                                                                    tg_send.send_raw(&format!(
+                                                                                        "⚡ FLASH ARB TX\nSig: {}\nToken: {}\nProfit: {} lam",
+                                                                                        sig, token_str, opp.profit_lamports
+                                                                                    )).await;
+                                                                                } else if let Some(err) = body.get("error") {
+                                                                                    info!(error = %err, "Flash TX send error");
+                                                                                }
+                                                                            }
+                                                                            Err(e) => info!(error = %e, "Flash TX request failed"),
+                                                                        }
+                                                                    });
+                                                                }
+                                                                Err(e) => info!(error = %e, "Flash TX build failed"),
+                                                            }
+
+                                                            // SKIP Ultra buy — use flash loan instead
+                                                            info!("Flash loan path complete");
+                                                            // Ultra buy path disabled — using flash loan above
                                                             let ultra_api = &jup_key;
-                                                            let ultra_result: Result<(String, String), String> = rt.block_on(async {
+                                                            let ultra_result: Result<(String, String), String> = Err("skipped — using flash loan".into());
+                                                            if false { let _unused = rt.block_on(async {
                                                                 // Get Ultra order (buy leg)
                                                                 let buy_url = format!(
                                                                     "https://api.jup.ag/ultra/v1/order?inputMint=So11111111111111111111111111111111111111112&outputMint={}&amount={}&taker={}&excludeRouters=jupiterz,dflow",
@@ -2723,7 +2772,7 @@ fn main() -> Result<()> {
                                                                 } else {
                                                                     Err(format!("Ultra: {} - {}", status, exec))
                                                                 }
-                                                            });
+                                                            }); } // close if false
 
                                                             match ultra_result {
                                                                 Ok((buy_sig, buy_resp_out)) => {
