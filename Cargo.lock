@@ -2433,6 +2433,7 @@ dependencies = [
  "agave-lite-core",
  "anyhow",
  "base64 0.21.7",
+ "bincode",
  "chrono",
  "clap 4.5.60",
  "core_affinity",

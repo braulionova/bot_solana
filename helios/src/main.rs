@@ -2640,15 +2640,35 @@ fn main() -> Result<()> {
                                                 match bh_result {
                                                     Err(e) => { info!(error = %e, "Flash TX: blockhash failed"); }
                                                     Ok(blockhash) => {
-                                                            // Build the flash TX
-                                                            info!("Flash TX: blockhash OK, building TX");
+                                                            // Build Jito tip instruction (minimum 1000 lamports)
+                                                            let tip_lamports = 1_000u64;
+                                                            let tip_accounts = [
+                                                                "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
+                                                                "HFqU5x63VTqvQss8hp11i4bPYoTdFDd2fi1rssk8ybP1",
+                                                                "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
+                                                                "ADaUMid9yfUC67HyGE6Gp36UJdrthHdaOnbVcLLc3as8",
+                                                                "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh",
+                                                                "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt",
+                                                                "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL",
+                                                                "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT",
+                                                            ];
+                                                            let tip_idx = (std::time::SystemTime::now()
+                                                                .duration_since(std::time::UNIX_EPOCH)
+                                                                .unwrap_or_default().as_secs() as usize) % tip_accounts.len();
+                                                            let tip_ix = solana_sdk::system_instruction::transfer(
+                                                                &kp_pubkey,
+                                                                &tip_accounts[tip_idx].parse().unwrap(),
+                                                                tip_lamports,
+                                                            );
+
+                                                            info!("Flash TX: blockhash OK, building TX with tip");
                                                             match tx_builder.build_jupiter_flash_tx(
                                                                 swap_ixs,
                                                                 amount,
                                                                 market_engine::types::FlashProvider::MarginFi,
                                                                 blockhash,
-                                                                &[], // no ALTs
-                                                                None, // no tip (Jito bundle handles it)
+                                                                &[],
+                                                                Some(tip_ix),
                                                             ) {
                                                                 Ok(tx) => {
                                                                     let tx_size = tx.message.serialize().len();
@@ -2659,27 +2679,51 @@ fn main() -> Result<()> {
                                                                         "⚡ FLASH TX BUILT — sending via Jito"
                                                                     );
 
-                                                                    // Send via Jito bundle
-                                                                    let jito = executor::jito_sender::JitoSender::new(None, None);
+                                                                    // Send via RPC sendTransaction (Jito rate limited, use RPC instead)
+                                                                    // Flash loan TX is atomic on-chain: if repay fails, entire TX reverts.
+                                                                    // Cost on failure: ~5000 lamports base fee only.
                                                                     let tg_send = tg.clone();
+                                                                    let tx_bytes = match bincode::serialize(&tx) {
+                                                                        Ok(b) => b,
+                                                                        Err(e) => { info!(error = %e, "TX serialize failed"); vec![] }
+                                                                    };
+                                                                    if !tx_bytes.is_empty() {
+                                                                    let tx_b64 = base64::Engine::encode(
+                                                                        &base64::engine::general_purpose::STANDARD, &tx_bytes
+                                                                    );
                                                                     rt.block_on(async {
-                                                                        match jito.send_bundle(&[tx]).await {
-                                                                            Ok(bundle_id) => {
-                                                                                info!(
-                                                                                    bundle_id = %bundle_id,
-                                                                                    profit = opp.profit_lamports,
-                                                                                    "✅ JITO BUNDLE SENT"
-                                                                                );
-                                                                                tg_send.send_raw(&format!(
-                                                                                    "⚡ FLASH ARB SENT\nBundle: {}\nToken: {}\nExpected profit: {} lamports",
-                                                                                    bundle_id, token_str, opp.profit_lamports
-                                                                                )).await;
+                                                                        let rpc_client = reqwest::Client::builder()
+                                                                            .timeout(std::time::Duration::from_secs(5))
+                                                                            .build().unwrap();
+                                                                        let send_result = rpc_client
+                                                                            .post("https://solana-rpc.publicnode.com")
+                                                                            .json(&serde_json::json!({
+                                                                                "jsonrpc": "2.0", "id": 1,
+                                                                                "method": "sendTransaction",
+                                                                                "params": [tx_b64, {"encoding": "base64", "skipPreflight": false}]
+                                                                            }))
+                                                                            .send().await;
+                                                                        match send_result {
+                                                                            Ok(resp) => {
+                                                                                let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                                                                                if let Some(sig) = body.get("result").and_then(|r| r.as_str()) {
+                                                                                    info!(sig = sig, profit = opp.profit_lamports, "✅ TX SENT via RPC");
+                                                                                    tg_send.send_raw(&format!(
+                                                                                        "⚡ FLASH ARB TX SENT\nSig: {}\nToken: {}\nExpected profit: {} lamports",
+                                                                                        sig, token_str, opp.profit_lamports
+                                                                                    )).await;
+                                                                                } else if let Some(err) = body.get("error") {
+                                                                                    info!(error = %err, "TX send error");
+                                                                                } else {
+                                                                                    info!(body = %body, "TX send unknown response");
+                                                                                }
                                                                             }
                                                                             Err(e) => {
-                                                                                info!(error = %e, "Jito bundle send failed");
+                                                                                info!(error = %e, "TX send request failed");
                                                                             }
                                                                         }
                                                                     });
+                                                                    } // !tx_bytes.is_empty()
                                                                 }
                                                                 Err(e) => {
                                                                     tracing::debug!(error = %e, "Flash TX build failed");
