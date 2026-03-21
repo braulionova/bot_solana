@@ -120,6 +120,24 @@ impl TokenGraph {
         if pool.reserve_a < 10_000_000 || pool.reserve_b < 10_000_000 {
             return;
         }
+        // Blacklist known phantom pools with stale reserves that generate fake arb cycles.
+        {
+            static BLACKLIST: std::sync::OnceLock<std::collections::HashSet<Pubkey>> = std::sync::OnceLock::new();
+            let bl = BLACKLIST.get_or_init(|| {
+                let mut s = std::collections::HashSet::new();
+                // mSOL/Raydium: $100K liq, $26/day vol → phantom 670K arb every 2s
+                if let Ok(p) = "EGyhb2uLAsRUbRx9dNFBjMVYnFaASWMvD6RE1aEf2LxL".parse() { s.insert(p); }
+                // USDT thin pool
+                if let Ok(p) = "7XawhbbxtsRcQA8KTkHT9f9nc6d69UwqCDh6U5EEbEmX".parse() { s.insert(p); }
+                if let Ok(list) = std::env::var("POOL_BLACKLIST") {
+                    for addr in list.split(',') {
+                        if let Ok(p) = addr.trim().parse() { s.insert(p); }
+                    }
+                }
+                s
+            });
+            if bl.contains(&pool.pool_address) { return; }
+        }
 
         // Use 0.1 SOL (100M lamports) as the reference amount for weight calculation.
         // At 1M (0.001 SOL), integer division artifacts and fee dominance distort weights
