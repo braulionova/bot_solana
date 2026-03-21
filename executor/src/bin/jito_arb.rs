@@ -32,14 +32,26 @@ fn main() -> Result<()> {
     let tokens = [usdc, usdt]; // scan both stablecoins
     let mut round = 0u64;
 
+    let api_key_2 = std::env::var("JUPITER_API_KEY_2").unwrap_or(api_key.clone());
+
     loop {
         round += 1;
+
+        // RECOVERY: sell any stuck USDC/USDT from previous failed sells
+        for &token in &tokens {
+            recover_stuck_tokens(&client, &api_key_2, &kp, token, wsol, &taker);
+        }
+
         for &token in &tokens {
             match run_arb(&client, &api_key, &kp, wsol, token, &amount, &taker, min_profit) {
                 Ok(profit) => {
                     if profit > 0 {
-                        println!("🎉 Round {} NET PROFIT: {} lamports", round, profit);
+                        println!("🎉 Round {} PROFIT: {} lamports", round, profit);
                     }
+                    // Wait 3s after successful send for TXs to settle
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    // Recover any stuck tokens from this round
+                    recover_stuck_tokens(&client, &api_key_2, &kp, token, wsol, &taker);
                 }
                 Err(e) => {
                     if !format!("{}", e).contains("Not profitable") {
@@ -259,6 +271,65 @@ fn run_arb(client: &reqwest::blocking::Client, api_key: &str, kp: &Keypair,
     }
 
     Ok(0)
+}
+
+/// Sell any stuck USDC/USDT via Ultra (recovery from failed sells)
+fn recover_stuck_tokens(client: &reqwest::blocking::Client, api_key: &str, kp: &Keypair, token: &str, wsol: &str, taker: &str) {
+    // Check token balance via RPC
+    let ata = solana_sdk::pubkey::Pubkey::find_program_address(
+        &[kp.pubkey().as_ref(),
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".parse::<solana_sdk::pubkey::Pubkey>().unwrap().as_ref(),
+          token.parse::<solana_sdk::pubkey::Pubkey>().unwrap().as_ref()],
+        &"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL".parse().unwrap(),
+    ).0;
+
+    let resp: serde_json::Value = client.post("https://solana-rpc.publicnode.com")
+        .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"getTokenAccountBalance","params":[ata.to_string()]}))
+        .send().unwrap_or_else(|_| panic!("rpc")).json().unwrap_or_default();
+
+    let amount_str = resp.get("result").and_then(|r| r.get("value")).and_then(|v| v.get("amount"))
+        .and_then(|a| a.as_str()).unwrap_or("0");
+    let amount: u64 = amount_str.parse().unwrap_or(0);
+
+    if amount < 100000 { return; } // less than 0.1 USDC, skip
+
+    println!("♻️ Recovering {} stuck tokens for {}", amount, &token[..8]);
+
+    // Sell via Ultra
+    let url = format!(
+        "https://api.jup.ag/ultra/v1/order?inputMint={}&outputMint={}&amount={}&taker={}&excludeRouters=jupiterz,dflow",
+        token, wsol, amount, taker
+    );
+    let order: serde_json::Value = match client.get(&url).header("x-api-key", api_key).send() {
+        Ok(r) => r.json().unwrap_or_default(),
+        Err(_) => return,
+    };
+    if order.get("error").and_then(|v| v.as_str()).unwrap_or("").len() > 0 { return; }
+
+    let tx_b64 = match order.get("transaction").and_then(|v| v.as_str()) {
+        Some(t) if !t.is_empty() => t,
+        _ => return,
+    };
+    let req_id = order.get("requestId").and_then(|v| v.as_str()).unwrap_or("");
+
+    // Sign + execute
+    if let Ok(bytes) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, tx_b64) {
+        if let Ok(mut tx) = bincode::deserialize::<VersionedTransaction>(&bytes) {
+            let msg = tx.message.serialize();
+            tx.signatures[0] = kp.sign_message(&msg);
+            let signed = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bincode::serialize(&tx).unwrap());
+
+            let exec: serde_json::Value = client.post("https://api.jup.ag/ultra/v1/execute")
+                .header("Content-Type", "application/json").header("x-api-key", api_key)
+                .json(&serde_json::json!({"signedTransaction": signed, "requestId": req_id}))
+                .send().unwrap_or_else(|_| panic!("exec")).json().unwrap_or_default();
+
+            let status = exec.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+            if status == "Success" {
+                println!("♻️ RECOVERED: sold {} tokens", amount);
+            }
+        }
+    }
 }
 
 fn sign_tx(tx_b64: &str, kp: &Keypair) -> Result<String> {
