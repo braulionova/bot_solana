@@ -32,7 +32,22 @@ fn main() -> Result<()> {
 
     println!("Flash Fill Arb | wallet: {} | amount: {} | min_profit: {}", taker, amount, min_profit);
 
-    let tokens = [USDC, USDT, "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So", "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN", "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm", "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN"];
+    let tokens = [
+        USDC, USDT,
+        "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So",  // mSOL (3.1% spread)
+        "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",  // JUP (2.6%)
+        "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", // BONK (1.9%)
+        "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm", // WIF (1.0%)
+        "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN", // TRUMP (1.5%)
+        "AymATz4TCL9sWNEEV9Kvyz45CHVhDZ6kUgjTJPzLpU9P", // RLB (-59! almost profitable)
+        "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs", // POPCAT (-842)
+        "27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4", // PENGU (-5684)
+        "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3", // PYTH
+        "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R", // RAY
+        "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn", // jitoSOL
+        "bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1",  // bSOL
+        "rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof",  // RENDER
+    ];
     let mut round = 0u64;
 
     loop {
