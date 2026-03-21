@@ -26,13 +26,19 @@ const WSOL: &str = "So11111111111111111111111111111111111111112";
 
 /// Get Jupiter swap instructions for a round-trip arb (SOL → token → SOL).
 /// Returns the extracted instructions that can be wrapped with flash loan.
+/// Result includes swap instructions AND Address Lookup Tables for TX compression.
+pub struct JupiterArbResult {
+    pub instructions: Vec<Instruction>,
+    pub address_lookup_tables: Vec<solana_sdk::address_lookup_table::AddressLookupTableAccount>,
+}
+
 pub async fn get_jupiter_arb_instructions(
     client: &reqwest::Client,
     api_key: &str,
     token_mint: &str,
     amount_lamports: u64,
     payer: &Pubkey,
-) -> Result<Vec<Instruction>> {
+) -> Result<JupiterArbResult> {
     // Step 1: Get buy quote (SOL → token)
     let buy_quote = get_quote(client, api_key, WSOL, token_mint, amount_lamports).await?;
     let tokens_out: u64 = buy_quote.get("outAmount")
@@ -66,23 +72,29 @@ pub async fn get_jupiter_arb_instructions(
 
     // Step 3: Get buy swap TX
     let buy_tx_data = get_swap_tx(client, api_key, &buy_quote, &payer.to_string()).await?;
-    let buy_ixs = extract_swap_instructions(&buy_tx_data)?;
+    let (buy_ixs, buy_alts) = extract_swap_instructions_with_alts(&buy_tx_data)?;
 
     // Step 4: Get sell swap TX
     let sell_tx_data = get_swap_tx(client, api_key, &sell_quote, &payer.to_string()).await?;
-    let sell_ixs = extract_swap_instructions(&sell_tx_data)?;
+    let (sell_ixs, sell_alts) = extract_swap_instructions_with_alts(&sell_tx_data)?;
 
-    // Combine: buy instructions + sell instructions
+    // Combine
     let mut all_ixs = buy_ixs;
     all_ixs.extend(sell_ixs);
+    let mut all_alts = buy_alts;
+    all_alts.extend(sell_alts);
+    // Dedup ALTs by address
+    all_alts.sort_by_key(|a| a.key);
+    all_alts.dedup_by_key(|a| a.key);
 
     info!(
         total_instructions = all_ixs.len(),
+        alts = all_alts.len(),
         profit,
         "Jupiter arb instructions extracted"
     );
 
-    Ok(all_ixs)
+    Ok(JupiterArbResult { instructions: all_ixs, address_lookup_tables: all_alts })
 }
 
 async fn get_quote(
@@ -92,8 +104,9 @@ async fn get_quote(
     output_mint: &str,
     amount: u64,
 ) -> Result<serde_json::Value> {
+    // onlyDirectRoutes=true: single-hop swaps → fewer accounts → fits in 1 TX with flash loan
     let url = format!(
-        "https://api.jup.ag/swap/v1/quote?inputMint={}&outputMint={}&amount={}&slippageBps=100",
+        "https://api.jup.ag/swap/v1/quote?inputMint={}&outputMint={}&amount={}&slippageBps=100&onlyDirectRoutes=true",
         input_mint, output_mint, amount
     );
     let resp = client.get(&url)
@@ -131,8 +144,13 @@ async fn get_swap_tx(
         .ok_or_else(|| anyhow!("no swapTransaction in response: {}", body))
 }
 
-/// Extract only the swap instructions from a Jupiter TX (skip compute budget, ATA setup).
-fn extract_swap_instructions(tx_b64: &str) -> Result<Vec<Instruction>> {
+/// Extract swap instructions AND Address Lookup Tables from a Jupiter TX.
+fn extract_swap_instructions_with_alts(tx_b64: &str) -> Result<(Vec<Instruction>, Vec<solana_sdk::address_lookup_table::AddressLookupTableAccount>)> {
+    let (ixs, alts) = extract_swap_instructions_inner(tx_b64)?;
+    Ok((ixs, alts))
+}
+
+fn extract_swap_instructions_inner(tx_b64: &str) -> Result<(Vec<Instruction>, Vec<solana_sdk::address_lookup_table::AddressLookupTableAccount>)> {
     let tx_bytes = base64::engine::general_purpose::STANDARD.decode(tx_b64)
         .context("decode tx")?;
     let tx: VersionedTransaction = bincode::deserialize(&tx_bytes)
@@ -211,7 +229,20 @@ fn extract_swap_instructions(tx_b64: &str) -> Result<Vec<Instruction>> {
         });
     }
 
-    Ok(swap_ixs)
+    // Extract ALTs from the V0 message
+    let mut alts = Vec::new();
+    if let VersionedMessage::V0(m) = &tx.message {
+        for alt_lookup in &m.address_table_lookups {
+            if let Ok(alt_accounts) = resolve_alt_accounts(&alt_lookup.account_key) {
+                alts.push(solana_sdk::address_lookup_table::AddressLookupTableAccount {
+                    key: alt_lookup.account_key,
+                    addresses: alt_accounts,
+                });
+            }
+        }
+    }
+
+    Ok((swap_ixs, alts))
 }
 
 /// Resolve Address Lookup Table accounts via RPC.

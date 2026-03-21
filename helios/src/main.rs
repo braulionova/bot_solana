@@ -2596,9 +2596,12 @@ fn main() -> Result<()> {
                                     });
 
                                     match result {
-                                        Ok(swap_ixs) if !swap_ixs.is_empty() => {
+                                        Ok(arb_result) if !arb_result.instructions.is_empty() => {
+                                            let swap_ixs = arb_result.instructions;
+                                            let jup_alts = arb_result.address_lookup_tables;
                                             info!(
                                                 instructions = swap_ixs.len(),
+                                                alts = jup_alts.len(),
                                                 "Jupiter swap instructions extracted, building flash TX"
                                             );
 
@@ -2669,7 +2672,7 @@ fn main() -> Result<()> {
                                                                 amount,
                                                                 market_engine::types::FlashProvider::Kamino,
                                                                 blockhash,
-                                                                &[],
+                                                                &jup_alts,
                                                                 Some(tip_ix),
                                                             ) {
                                                                 Ok(tx) => {
@@ -2680,30 +2683,42 @@ fn main() -> Result<()> {
                                                                     );
                                                                     let tg_send = tg.clone();
                                                                     rt.block_on(async {
+                                                                        // Send to MULTIPLE RPCs simultaneously for max landing rate
                                                                         let rpc = reqwest::Client::builder()
                                                                             .timeout(std::time::Duration::from_secs(5))
                                                                             .build().unwrap();
-                                                                        let resp = rpc.post("https://solana-rpc.publicnode.com")
-                                                                            .json(&serde_json::json!({
-                                                                                "jsonrpc":"2.0","id":1,
-                                                                                "method":"sendTransaction",
-                                                                                "params":[tx_b64,{"encoding":"base64","skipPreflight":false,"preflightCommitment":"processed"}]
-                                                                            }))
-                                                                            .send().await;
-                                                                        match resp {
-                                                                            Ok(r) => {
+                                                                        let send_body = serde_json::json!({
+                                                                            "jsonrpc":"2.0","id":1,
+                                                                            "method":"sendTransaction",
+                                                                            "params":[tx_b64,{"encoding":"base64","skipPreflight":true,"preflightCommitment":"processed"}]
+                                                                        });
+                                                                        let rpcs = [
+                                                                            "https://solana-rpc.publicnode.com",
+                                                                            "https://mainnet.helius-rpc.com/?api-key=7996d184-b857-45d5-8f7d-bfd1164e6a95",
+                                                                            "https://api.mainnet-beta.solana.com",
+                                                                        ];
+                                                                        // Fire all 3 in parallel
+                                                                        let futs: Vec<_> = rpcs.iter().map(|url| {
+                                                                            rpc.post(*url).json(&send_body).send()
+                                                                        }).collect();
+                                                                        let results = futures::future::join_all(futs).await;
+                                                                        let mut sent = false;
+                                                                        for (i, res) in results.into_iter().enumerate() {
+                                                                            if let Ok(r) = res {
                                                                                 let body: serde_json::Value = r.json().await.unwrap_or_default();
                                                                                 if let Some(sig) = body.get("result").and_then(|v| v.as_str()) {
-                                                                                    info!(sig, profit = opp.profit_lamports, "✅ FLASH ARB TX SENT");
-                                                                                    tg_send.send_raw(&format!(
-                                                                                        "⚡ FLASH ARB TX\nSig: {}\nToken: {}\nProfit: {} lam",
-                                                                                        sig, token_str, opp.profit_lamports
-                                                                                    )).await;
+                                                                                    if !sent {
+                                                                                        info!(sig, rpc = rpcs[i], profit = opp.profit_lamports, "✅ FLASH ARB TX SENT");
+                                                                                        tg_send.send_raw(&format!(
+                                                                                            "⚡ FLASH ARB TX\nSig: {}\nToken: {}\nProfit: {} lam\nRPC: {}",
+                                                                                            sig, token_str, opp.profit_lamports, rpcs[i]
+                                                                                        )).await;
+                                                                                        sent = true;
+                                                                                    }
                                                                                 } else if let Some(err) = body.get("error") {
-                                                                                    info!(error = %err, "Flash TX send error");
+                                                                                    info!(rpc = rpcs[i], error = %err, "Flash TX RPC error");
                                                                                 }
                                                                             }
-                                                                            Err(e) => info!(error = %e, "Flash TX request failed"),
                                                                         }
                                                                     });
                                                                 }
