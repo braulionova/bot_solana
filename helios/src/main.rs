@@ -2550,6 +2550,17 @@ fn main() -> Result<()> {
                     let min_profit = std::env::var("ULTRA_MIN_PROFIT_LAMPORTS")
                         .ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(100_000); // 0.0001 SOL min
 
+                    // Ultra 2-leg arb DISABLED — non-atomic buy+sell loses money.
+                    // Scanner runs in MONITOR-ONLY mode: detects opportunities, logs them,
+                    // triggers route engine re-scan, but does NOT execute via Ultra.
+                    //
+                    // Why: Jupiter quotes show 0.3-0.7% spreads but they close in <500ms.
+                    // Non-atomic 2-leg (buy then sell) = timing risk = guaranteed loss.
+                    // Solution: need atomic flash loan arb OR faster execution (<100ms).
+                    let ultra_execute = std::env::var("ULTRA_EXECUTE")
+                        .map(|v| v == "true" || v == "1")
+                        .unwrap_or(false); // DEFAULT OFF — only enable manually
+
                     loop {
                         let targets = scanner.get_scan_targets();
                         let n_targets = targets.len();
@@ -2559,39 +2570,34 @@ fn main() -> Result<()> {
                             if let Some(opp) = scanner.scan_token(token, &borrow_amounts) {
                                 found += 1;
 
-                                // Execute via Ultra if profitable enough
-                                if let Some(ref ultra) = ultra {
-                                    if opp.profit_lamports > min_profit && opp.borrow_amount <= 100_000_000 {
-                                        let token_str = opp.token.to_string();
-                                        let amount = opp.borrow_amount;
-                                        let ultra_c = ultra.clone();
-                                        let tg_c = tg.clone();
+                                // Only execute if ULTRA_EXECUTE=true AND profit > min
+                                if ultra_execute {
+                                    if let Some(ref ultra) = ultra {
+                                        if opp.profit_lamports > min_profit && opp.borrow_amount <= 100_000_000 {
+                                            let token_str = opp.token.to_string();
+                                            let amount = opp.borrow_amount;
+                                            let ultra_c = ultra.clone();
+                                            let tg_c = tg.clone();
 
-                                        info!(
-                                            token = %opp.token,
-                                            amount,
-                                            expected_profit = opp.profit_lamports,
-                                            "🚀 ULTRA EXECUTE: attempting arb"
-                                        );
+                                            info!(
+                                                token = %opp.token, amount,
+                                                expected_profit = opp.profit_lamports,
+                                                "🚀 ULTRA EXECUTE: attempting arb"
+                                            );
 
-                                        rt.block_on(async {
-                                            match ultra_c.execute_arb(&token_str, amount).await {
-                                                Ok((buy_sig, sell_sig, profit)) => {
-                                                    info!(
-                                                        buy = %buy_sig, sell = %sell_sig,
-                                                        profit, "✅ ULTRA ARB SUCCESS"
-                                                    );
-                                                    let msg = format!(
-                                                        "✅ ULTRA ARB SUCCESS\nProfit: {} lamports ({:.4} SOL)\nBuy: {}\nSell: {}\nToken: {}",
-                                                        profit, profit as f64 / 1e9, buy_sig, sell_sig, token_str
-                                                    );
-                                                    tg_c.send_raw(&msg).await;
+                                            rt.block_on(async {
+                                                match ultra_c.execute_arb(&token_str, amount).await {
+                                                    Ok((buy_sig, sell_sig, profit)) => {
+                                                        info!(buy = %buy_sig, sell = %sell_sig, profit, "✅ ULTRA ARB SUCCESS");
+                                                        tg_c.send_raw(&format!(
+                                                            "✅ ULTRA ARB\nProfit: {} lam ({:.4} SOL)\nBuy: {}\nSell: {}\nToken: {}",
+                                                            profit, profit as f64 / 1e9, buy_sig, sell_sig, token_str
+                                                        )).await;
+                                                    }
+                                                    Err(e) => warn!(error = %e, "Ultra arb failed"),
                                                 }
-                                                Err(e) => {
-                                                    warn!(error = %e, "Ultra arb failed");
-                                                }
-                                            }
-                                        });
+                                            });
+                                        }
                                     }
                                 }
 
@@ -2603,7 +2609,6 @@ fn main() -> Result<()> {
                                     },
                                 }).ok();
                             }
-                            // Rate limit: ~200ms between API calls
                             thread::sleep(Duration::from_millis(200));
                         }
 
@@ -2612,16 +2617,15 @@ fn main() -> Result<()> {
                             scanner.opportunities.load(std::sync::atomic::Ordering::Relaxed),
                         );
                         let best = scanner.best_profit.load(std::sync::atomic::Ordering::Relaxed);
-                        info!(
-                            targets = n_targets,
-                            found,
-                            total_scans = scans,
-                            total_opportunities = opps,
-                            best_profit_lamports = best,
-                            "jupiter-arb-scanner: scan cycle complete"
-                        );
+                        if found > 0 {
+                            info!(
+                                targets = n_targets, found,
+                                total_scans = scans, total_opportunities = opps,
+                                best_profit_lamports = best,
+                                "jupiter-arb-scanner: cycle complete"
+                            );
+                        }
 
-                        // Sleep between full cycles
                         thread::sleep(Duration::from_secs(10));
                     }
                 })?;
