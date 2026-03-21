@@ -64,11 +64,19 @@ fn run_flash_arb(client: &reqwest::blocking::Client, api_key: &str, kp: &Keypair
     let tokens_out = buy_quote.get("outAmount").and_then(|v| v.as_str()).unwrap_or("0");
     if tokens_out == "0" { return Err(anyhow!("no quote")); }
 
-    // Use 98% of buy output for sell to account for buy slippage/fees
-    // Flash loan repay enforces profitability, so leaving 2% buffer is safe
-    let sell_amount: u64 = (tokens_out.parse::<u64>().unwrap_or(0) as f64 * 0.995) as u64;
-    let sell_amount_str = sell_amount.to_string();
-    let sell_quote = jup_quote(client, api_key, token, WSOL, &sell_amount_str)?;
+    // ExactOut: how much token do we need to sell to get back amount + min_profit?
+    let borrow_amt: u64 = amount.parse().unwrap_or(0);
+    let repay_amount = borrow_amt + 10000; // repay + 10K lamports min profit
+    let sell_quote = jup_quote_exact_out(client, api_key, token, WSOL, &repay_amount.to_string())?;
+    let sell_input_needed: u64 = sell_quote.get("inAmount").and_then(|v| v.as_str())
+        .unwrap_or("0").parse().unwrap_or(0);
+    let tokens_bought: u64 = tokens_out.parse().unwrap_or(0);
+
+    if sell_input_needed == 0 || tokens_bought < sell_input_needed {
+        return Err(anyhow!("Not profitable: buy={} < sell_needs={}", tokens_bought, sell_input_needed));
+    }
+    let token_profit = tokens_bought - sell_input_needed;
+    println!("✅ ExactOut arb: buy={} sell_needs={} token_profit={}", tokens_bought, sell_input_needed, token_profit);
     let sol_back = sell_quote.get("outAmount").and_then(|v| v.as_str()).unwrap_or("0");
     let profit: i64 = sol_back.parse::<i64>().unwrap_or(0) - amount.parse::<i64>().unwrap_or(0);
 
@@ -216,6 +224,13 @@ fn run_flash_arb(client: &reqwest::blocking::Client, api_key: &str, kp: &Keypair
         println!("❌ Send error: {}", resp);
         Ok(false)
     }
+}
+
+fn jup_quote_exact_out(client: &reqwest::blocking::Client, api_key: &str, input: &str, output: &str, amount: &str) -> Result<serde_json::Value> {
+    let url = format!("https://api.jup.ag/swap/v1/quote?inputMint={}&outputMint={}&amount={}&slippageBps=10000&swapMode=ExactOut", input, output, amount);
+    let resp: serde_json::Value = client.get(&url).header("x-api-key", api_key).send()?.json()?;
+    if resp.get("inAmount").is_none() { return Err(anyhow!("no ExactOut quote")); }
+    Ok(resp)
 }
 
 fn jup_quote(client: &reqwest::blocking::Client, api_key: &str, input: &str, output: &str, amount: &str) -> Result<serde_json::Value> {
