@@ -73,7 +73,7 @@ fn run_carbium_flash(client: &reqwest::blocking::Client, api_key: &str, kp: &Key
     println!("✅ Carbium arb: +{} lam @ {} SOL", profit, in_amt as f64 / 1e9);
 
     // 2. Extract swap IXs + ALTs from Carbium TX
-    let (swap_ixs, alts) = extract_ixs_and_alts(txn_b64)?;
+    let (swap_ixs, mut alts) = extract_ixs_and_alts(txn_b64)?;
     println!("   Extracted {} swap IXs, {} ALTs", swap_ixs.len(), alts.len());
 
     // 3. Build Solend flash borrow + repay
@@ -152,7 +152,13 @@ fn run_carbium_flash(client: &reqwest::blocking::Client, api_key: &str, kp: &Key
     instructions.extend(swap_ixs);
     instructions.push(repay_ix);
 
-    // 5. Get blockhash + build V0 TX
+    // 5. Add Solend ALT (reduces flash loan overhead from 250 to ~50 bytes)
+    let solend_alt_key: Pubkey = "DxqDtA94NJNPYCQyfY2WGMpkW5ukVa3wnSCyd1mEoojU".parse()?;
+    if let Ok(solend_alt_addrs) = resolve_alt(&solend_alt_key) {
+        alts.push(AddressLookupTableAccount { key: solend_alt_key, addresses: solend_alt_addrs });
+    }
+
+    // 6. Get blockhash + build V0 TX
     let bh: serde_json::Value = client.post(CARBIUM_RPC)
         .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"getLatestBlockhash","params":[{"commitment":"confirmed"}]}))
         .send()?.json()?;
@@ -181,12 +187,20 @@ fn run_carbium_flash(client: &reqwest::blocking::Client, api_key: &str, kp: &Key
 
     if let Some(sig) = resp.get("result").and_then(|v| v.as_str()) {
         println!("🎉 FLASH ARB SENT: {} | profit: {}", sig, profit);
-        Ok(true)
-    } else {
-        // Fallback to direct Carbium TX
-        println!("   RPC failed, sending Carbium TX directly");
-        send_carbium_direct(client, txn_b64, kp, profit)
+        return Ok(true);
     }
+    // Try publicnode as fallback
+    let resp2: serde_json::Value = client.post("https://solana-rpc.publicnode.com")
+        .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"sendTransaction",
+            "params":[tx_b64,{"encoding":"base64","skipPreflight":true}]}))
+        .send()?.json()?;
+    if let Some(sig) = resp2.get("result").and_then(|v| v.as_str()) {
+        println!("🎉 FLASH ARB SENT (publicnode): {} | profit: {}", sig, profit);
+        return Ok(true);
+    }
+    // Last fallback: direct Carbium TX (no flash loan)
+    println!("   Flash send failed, sending direct: {:?}", resp2.get("error"));
+    send_carbium_direct(client, txn_b64, kp, profit)
 }
 
 fn send_carbium_direct(client: &reqwest::blocking::Client, txn_b64: &str, kp: &Keypair, profit: i64) -> Result<bool> {
