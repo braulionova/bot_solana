@@ -95,21 +95,49 @@ fn run_arb(client: &reqwest::blocking::Client, api_key: &str, kp: &Keypair,
     let sell_tx_b64 = sell_tx_resp.get("swapTransaction").and_then(|v| v.as_str())
         .ok_or(anyhow!("no sell swapTransaction"))?;
 
-    // Step 4: Sign both TXs
-    let buy_tx = sign_tx(buy_tx_b64, &kp)?;
-    let sell_tx = sign_tx(sell_tx_b64, &kp)?;
-    println!("Both TXs signed ({} + {} bytes)", buy_tx.len(), sell_tx.len());
+    // Step 4: Sign both TXs + build Jito tip TX
+    let buy_tx = sign_tx(buy_tx_b64, kp)?;
+    let sell_tx = sign_tx(sell_tx_b64, kp)?;
 
-    // Step 5: Try Jito bundle first, fallback to sequential RPC send
+    // Build tip TX (required for Jito bundle inclusion)
+    let tip_accounts = [
+        "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
+        "HFqU5x63VTqvQss8hp11i4bPYoTdFDd2fi1rssk8ybP1",
+        "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
+        "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh",
+    ];
+    let tip_idx = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_secs() as usize) % tip_accounts.len();
+    let tip_pubkey: solana_sdk::pubkey::Pubkey = tip_accounts[tip_idx].parse()?;
+    let tip_ix = solana_sdk::system_instruction::transfer(&kp.pubkey(), &tip_pubkey, 1000);
+
+    // Get fresh blockhash for tip TX
+    let bh_resp: serde_json::Value = client.post("https://solana-rpc.publicnode.com")
+        .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"getLatestBlockhash","params":[{"commitment":"confirmed"}]}))
+        .send()?.json()?;
+    let bh_str = bh_resp.get("result").and_then(|r| r.get("value")).and_then(|v| v.get("blockhash"))
+        .and_then(|b| b.as_str()).ok_or(anyhow!("no blockhash"))?;
+    let blockhash: solana_sdk::hash::Hash = bh_str.parse()?;
+
+    let tip_tx_obj = solana_sdk::transaction::Transaction::new_signed_with_payer(
+        &[tip_ix], Some(&kp.pubkey()), &[kp], blockhash,
+    );
+    let tip_tx_bytes = bincode::serialize(&tip_tx_obj)?;
+    let tip_tx = bs58::encode(&tip_tx_bytes).into_string();
+
+    println!("3 TXs signed: buy({}) + sell({}) + tip({} bytes)", buy_tx.len(), sell_tx.len(), tip_tx_bytes.len());
+
+    // Step 5: Try ALL Jito endpoints (Frankfurt/Amsterdam usually not rate limited)
     let jito_endpoints = [
-        "https://mainnet.block-engine.jito.wtf/api/v1/bundles",
         "https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles",
         "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/bundles",
+        "https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles",
+        "https://mainnet.block-engine.jito.wtf/api/v1/bundles",
     ];
     let mut jito_sent = false;
     for ep in &jito_endpoints {
         let resp: serde_json::Value = client.post(*ep)
-            .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"sendBundle","params":[[&buy_tx, &sell_tx]]}))
+            .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"sendBundle","params":[[&buy_tx, &sell_tx, &tip_tx]]}))
             .send()?.json()?;
         if let Some(id) = resp.get("result").and_then(|v| v.as_str()) {
             println!("✅ JITO BUNDLE SENT: {} via {}", id, ep);
@@ -133,71 +161,27 @@ fn run_arb(client: &reqwest::blocking::Client, api_key: &str, kp: &Keypair,
             .send()?.json()?;
         if let Some(sig) = buy_resp.get("result").and_then(|v| v.as_str()) {
             println!("✅ BUY TX SENT: {}", sig);
-            // Wait for buy to confirm before sending sell
-            println!("⏳ Waiting for buy confirmation...");
-            for _ in 0..15 {
-                std::thread::sleep(std::time::Duration::from_secs(1));
-                let status: serde_json::Value = client.post("https://solana-rpc.publicnode.com")
-                    .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"getSignatureStatuses","params":[[sig]]}))
-                    .send().unwrap_or_else(|_| panic!("rpc")).json().unwrap_or_default();
-                let confirmed = status.get("result")
-                    .and_then(|r| r.get("value"))
-                    .and_then(|v| v.get(0))
-                    .and_then(|s| s.get("confirmationStatus"))
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("");
-                let err = status.get("result")
-                    .and_then(|r| r.get("value"))
-                    .and_then(|v| v.get(0))
-                    .and_then(|s| s.get("err"));
-                if confirmed == "confirmed" || confirmed == "finalized" {
-                    if err.is_some() && !err.unwrap().is_null() {
-                        println!("❌ BUY FAILED on-chain: {:?}", err);
-                        return Ok(0);
-                    }
-                    println!("✅ BUY CONFIRMED");
-
-                    break;
-                }
-            }
-            // Sell via Ultra (iris router — proven to work, unlike Jupiter Swap API)
-            let sell_url = format!(
-                "https://api.jup.ag/ultra/v1/order?inputMint={}&outputMint={}&amount={}&taker={}&excludeRouters=jupiterz,dflow",
-                token, wsol, tokens_out, taker
-            );
-            let sell_order: serde_json::Value = client.get(&sell_url)
-                .header("x-api-key", api_key).send()?.json()?;
-            if let Some(e) = sell_order.get("error").and_then(|v| v.as_str()) {
-                if !e.is_empty() { println!("❌ Ultra sell error: {}", e); return Ok(0); }
-            }
-            let sell_tx_b64 = sell_order.get("transaction").and_then(|v| v.as_str())
-                .ok_or(anyhow!("no Ultra sell TX"))?;
-            let sell_req_id = sell_order.get("requestId").and_then(|v| v.as_str()).unwrap_or("");
-            let sell_out = sell_order.get("outAmount").and_then(|v| v.as_str()).unwrap_or("0");
-            println!("Ultra sell quote: {} USDC → {} SOL", tokens_out, sell_out);
-
-            // Sign Ultra TX
-            let sell_bytes = base64::engine::general_purpose::STANDARD.decode(sell_tx_b64)?;
-            let mut sell_tx_obj: VersionedTransaction = bincode::deserialize(&sell_bytes)?;
-            let sell_msg = sell_tx_obj.message.serialize();
-            sell_tx_obj.signatures[0] = kp.sign_message(&sell_msg);
-            let sell_signed = bincode::serialize(&sell_tx_obj)?;
-            let sell_signed_b64 = base64::engine::general_purpose::STANDARD.encode(&sell_signed);
-
-            // Execute via Ultra
-            let exec_resp: serde_json::Value = client.post("https://api.jup.ag/ultra/v1/execute")
-                .header("Content-Type", "application/json").header("x-api-key", api_key)
-                .json(&serde_json::json!({"signedTransaction": sell_signed_b64, "requestId": sell_req_id}))
+            // Wait 500ms (1 slot) to avoid same-slot conflict (error 6024)
+            // Round 1 failed: buy+sell same slot → 6024
+            // Round 2 succeeded: buy slot N, sell slot N+1
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            println!("⚡ Sending sell (500ms delay)...");
+            // Send ALREADY-SIGNED sell TX via RPC immediately
+            let sell_b64_rpc = base64::engine::general_purpose::STANDARD.encode(
+                &bs58::decode(&sell_tx).into_vec()?);
+            let sell_rpc_resp: serde_json::Value = client.post("https://solana-rpc.publicnode.com")
+                .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"sendTransaction",
+                    "params":[sell_b64_rpc,{"encoding":"base64","skipPreflight":true}]}))
                 .send()?.json()?;
-            let status = exec_resp.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-            let sell_sig = exec_resp.get("signature").and_then(|v| v.as_str()).unwrap_or("");
-            if status == "Success" {
-                let real_profit: i64 = sell_out.parse::<i64>().unwrap_or(0) - amount.parse::<i64>().unwrap_or(0);
-                println!("✅ SELL SUCCESS: {} (profit: {} lamports)", sell_sig, real_profit);
+            if let Some(sell_sig) = sell_rpc_resp.get("result").and_then(|v| v.as_str()) {
+                let real_profit = profit;
+                println!("✅ SELL TX SENT: {} (profit: {} lamports)", sell_sig, real_profit);
+                return Ok(real_profit);
             } else {
-                println!("❌ Ultra sell failed: {}", exec_resp);
+                println!("❌ Sell RPC failed: {}", sell_rpc_resp);
             }
-            // Skip old RPC sell path
+            // Skip Ultra fallback
+            return Ok(0);
             return Ok(0);
 
             let sell_resp: serde_json::Value = client.post("https://solana-rpc.publicnode.com")
