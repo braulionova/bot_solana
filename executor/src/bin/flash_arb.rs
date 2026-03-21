@@ -201,7 +201,7 @@ fn run_flash_arb(client: &reqwest::blocking::Client, api_key: &str, kp: &Keypair
     all_alts.dedup_by_key(|a| a.key);
 
     // 7. Get blockhash
-    let bh: serde_json::Value = client.post("https://solana-rpc.publicnode.com")
+    let bh: serde_json::Value = client.post("https://rpc-service.carbium.io/?apiKey=578475ff-1380")
         .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"getLatestBlockhash","params":[{"commitment":"confirmed"}]}))
         .send()?.json()?;
     let blockhash: Hash = bh.get("result").and_then(|r| r.get("value")).and_then(|v| v.get("blockhash"))
@@ -223,7 +223,7 @@ fn run_flash_arb(client: &reqwest::blocking::Client, api_key: &str, kp: &Keypair
 
     // 9. Send via RPC
     let tx_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
-    let resp: serde_json::Value = client.post("https://solana-rpc.publicnode.com")
+    let resp: serde_json::Value = client.post("https://rpc-service.carbium.io/?apiKey=578475ff-1380")
         .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"sendTransaction",
             "params":[tx_b64,{"encoding":"base64","skipPreflight":true}]}))
         .send()?.json()?;
@@ -325,7 +325,7 @@ fn extract_ixs_and_alts(tx_b64: &str) -> Result<(Vec<Instruction>, Vec<AddressLo
 
 fn resolve_alt(addr: &Pubkey) -> Result<Vec<Pubkey>> {
     let client = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(3)).build()?;
-    let resp: serde_json::Value = client.post("https://solana-rpc.publicnode.com")
+    let resp: serde_json::Value = client.post("https://rpc-service.carbium.io/?apiKey=578475ff-1380")
         .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":[addr.to_string(),{"encoding":"base64"}]}))
         .send()?.json()?;
     let data_b64 = resp.get("result").and_then(|r| r.get("value")).and_then(|v| v.get("data"))
