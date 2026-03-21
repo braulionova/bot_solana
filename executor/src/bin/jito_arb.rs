@@ -155,23 +155,47 @@ fn run_arb(client: &reqwest::blocking::Client, api_key: &str, kp: &Keypair,
     }
 
     if !jito_sent {
-        // Fallback: send both TXs sequentially via RPC (NOT atomic — risky!)
-        println!("⚠️ Jito rate limited. Sending via RPC (non-atomic)...");
-        // Convert back to base64 for RPC
+        // Send BOTH TXs via Jito sendTransaction (faster than public RPC, less rate limited than bundle)
+        println!("⚡ Sending via Jito sendTransaction + public RPC (parallel)...");
         let buy_b64 = base64::engine::general_purpose::STANDARD.encode(
             &bs58::decode(&buy_tx).into_vec()?);
         let sell_b64 = base64::engine::general_purpose::STANDARD.encode(
             &bs58::decode(&sell_tx).into_vec()?);
 
-        let buy_resp: serde_json::Value = client.post("https://solana-rpc.publicnode.com")
+        // Send buy via Jito sendTransaction + publicnode simultaneously
+        let jito_buy = client.post("https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/transactions")
+            .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"sendTransaction",
+                "params":[buy_tx,{"encoding":"base58"}]}))
+            .send();
+        let rpc_buy = client.post("https://solana-rpc.publicnode.com")
             .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"sendTransaction",
                 "params":[buy_b64,{"encoding":"base64","skipPreflight":true}]}))
-            .send()?.json()?;
-        if let Some(sig) = buy_resp.get("result").and_then(|v| v.as_str()) {
+            .send();
+        // Get first successful response
+        let buy_sig = if let Ok(r) = jito_buy { r.json::<serde_json::Value>().ok() } else { None }
+            .or_else(|| rpc_buy.ok().and_then(|r| r.json().ok()))
+            .and_then(|v| v.get("result").and_then(|r| r.as_str().map(String::from)));
+        if let Some(sig) = buy_sig {
             println!("✅ BUY TX SENT: {}", sig);
-            // Wait 500ms for buy to propagate, then sell via Ultra
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            println!("⚡ Selling via Ultra...");
+            // Send pre-signed sell TX via Jito sendTransaction (NO delay, NO Ultra)
+            let jito_sell = client.post("https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/transactions")
+                .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"sendTransaction",
+                    "params":[sell_tx,{"encoding":"base58"}]}))
+                .send();
+            let rpc_sell = client.post("https://solana-rpc.publicnode.com")
+                .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"sendTransaction",
+                    "params":[sell_b64,{"encoding":"base64","skipPreflight":true}]}))
+                .send();
+            let sell_sig = if let Ok(r) = jito_sell { r.json::<serde_json::Value>().ok() } else { None }
+                .or_else(|| rpc_sell.ok().and_then(|r| r.json().ok()))
+                .and_then(|v| v.get("result").and_then(|r| r.as_str().map(String::from)));
+            if let Some(ssig) = sell_sig {
+                println!("✅ SELL TX SENT: {} (expected profit: {} lam)", ssig, profit);
+                return Ok(profit);
+            } else {
+                println!("❌ Sell send failed, falling back to Ultra...");
+            }
+            println!("⚡ Selling via Ultra (fallback)...");
 
             let sell_url = format!(
                 "https://api.jup.ag/ultra/v1/order?inputMint={}&outputMint={}&amount={}&taker={}&excludeRouters=jupiterz,dflow",
@@ -230,7 +254,7 @@ fn run_arb(client: &reqwest::blocking::Client, api_key: &str, kp: &Keypair,
                 println!("❌ SELL failed: {}", sell_resp);
             }
         } else {
-            println!("❌ BUY failed: {}", buy_resp);
+            println!("❌ BUY send failed");
         }
     }
 
