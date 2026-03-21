@@ -43,6 +43,7 @@ impl UltraExecutor {
     }
 
     /// Execute a buy+sell arb via Jupiter Ultra.
+    /// SAFETY: Gets sell quote BEFORE executing buy to verify profitability.
     /// Returns (buy_sig, sell_sig, profit_lamports) on success.
     pub async fn execute_arb(
         &self,
@@ -52,29 +53,50 @@ impl UltraExecutor {
         let wsol = "So11111111111111111111111111111111111111112";
         let taker = self.keypair.pubkey().to_string();
 
-        // Step 1: Buy token with SOL via Ultra
-        info!(token = token_mint, amount = amount_sol_lamports, "Ultra: placing buy order");
+        // Step 1: Get buy quote (SOL → token)
         let buy_order = self.get_order(wsol, token_mint, amount_sol_lamports, &taker, &self.api_key).await?;
-        let tokens_out: u64 = buy_order.out_amount.parse().map_err(|e| format!("parse: {}", e))?;
-        let buy_request_id = buy_order.request_id.clone();
+        let tokens_out: u64 = buy_order.out_amount.parse().map_err(|e| format!("parse buy: {}", e))?;
+        if tokens_out == 0 { return Err("buy quote: 0 tokens out".into()); }
 
-        // Sign and execute buy
-        let buy_sig = self.sign_and_execute(&buy_order.transaction, &buy_request_id, &self.api_key).await?;
+        // Step 2: Get sell quote BEFORE buying using swap/v1/quote (no taker = no balance check)
+        let sell_quote_url = format!(
+            "https://api.jup.ag/swap/v1/quote?inputMint={}&outputMint={}&amount={}&slippageBps=100",
+            token_mint, wsol, tokens_out
+        );
+        let sell_resp = self.client.get(&sell_quote_url)
+            .header("x-api-key", &self.api_key_2)
+            .send().await
+            .map_err(|e| format!("sell quote: {}", e))?;
+        let sell_body: serde_json::Value = sell_resp.json().await
+            .map_err(|e| format!("sell quote json: {}", e))?;
+        let sol_back: u64 = sell_body.get("outAmount")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0")
+            .parse().unwrap_or(0);
+        let expected_profit = sol_back as i64 - amount_sol_lamports as i64;
+
+        if expected_profit <= 0 {
+            return Err(format!("pre-check: sell quote unprofitable ({} lamports)", expected_profit));
+        }
+        info!(
+            token = token_mint, amount = amount_sol_lamports,
+            tokens = tokens_out, sell_back = sol_back,
+            expected_profit, "Ultra: pre-check passed, executing buy"
+        );
+
+        // Step 3: Execute buy
+        let buy_sig = self.sign_and_execute(&buy_order.transaction, &buy_order.request_id, &self.api_key).await?;
         info!(sig = %buy_sig, tokens = tokens_out, "Ultra: buy landed");
 
-        // Step 2: Sell tokens back for SOL via Ultra (use second API key to avoid rate limit)
-        info!(token = token_mint, tokens = tokens_out, "Ultra: placing sell order");
+        // Step 4: Execute sell immediately (get fresh quote — price may have moved)
         let sell_order = self.get_order(token_mint, wsol, tokens_out, &taker, &self.api_key_2).await?;
-        let sol_received: u64 = sell_order.out_amount.parse().map_err(|e| format!("parse: {}", e))?;
-        let sell_request_id = sell_order.request_id.clone();
+        let sol_received: u64 = sell_order.out_amount.parse().map_err(|e| format!("parse sell2: {}", e))?;
 
-        let sell_sig = self.sign_and_execute(&sell_order.transaction, &sell_request_id, &self.api_key_2).await?;
+        let sell_sig = self.sign_and_execute(&sell_order.transaction, &sell_order.request_id, &self.api_key_2).await?;
         let profit = sol_received as i64 - amount_sol_lamports as i64;
         info!(
-            sig = %sell_sig,
-            sol_received = sol_received,
-            profit = profit,
-            "Ultra: sell landed"
+            sig = %sell_sig, sol_received, profit,
+            "Ultra: sell landed — arb complete"
         );
 
         self.executions.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -91,10 +113,12 @@ impl UltraExecutor {
         taker: &str,
         api_key: &str,
     ) -> Result<UltraOrder, String> {
+        // Exclude jupiterz (signing fails) and dflow (unreliable). OKX + iris work.
         let url = format!(
-            "https://api.jup.ag/ultra/v1/order?inputMint={}&outputMint={}&amount={}&taker={}",
+            "https://api.jup.ag/ultra/v1/order?inputMint={}&outputMint={}&amount={}&taker={}&excludeRouters=jupiterz,dflow",
             input_mint, output_mint, amount, taker
         );
+        info!(url = %url, "Ultra: requesting order");
         let resp = self.client.get(&url)
             .header("x-api-key", api_key)
             .send()

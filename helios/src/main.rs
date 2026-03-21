@@ -2532,12 +2532,11 @@ fn main() -> Result<()> {
 
                     info!(ultra_enabled = ultra.is_some(), "jupiter-arb-scanner started");
 
-                    // Ultra reserves ~1.9 SOL for fees/rent, leaving only ~0.01 SOL usable
-                    // Scanner still checks larger amounts to detect opportunities
+                    // Conservative: 0.1 SOL max to avoid "Insufficient funds" from ATA creation
                     let borrow_amounts = [
-                        10_000_000u64,    // 0.01 SOL (what Ultra actually accepts)
-                        100_000_000,      // 0.1 SOL (for detection, not execution)
-                        500_000_000,      // 0.5 SOL (for detection only)
+                        10_000_000u64,    // 0.01 SOL
+                        50_000_000,       // 0.05 SOL
+                        100_000_000,      // 0.1 SOL
                     ];
 
                     // Tokio runtime for Ultra async execution
@@ -2547,8 +2546,9 @@ fn main() -> Result<()> {
                         .expect("tokio rt jupiter-scanner");
 
                     let tg = executor::telegram::TelegramBot::from_env();
+                    // Min profit: cover Jupiter 5bps fee + priority fees (~0.0005 SOL per leg)
                     let min_profit = std::env::var("ULTRA_MIN_PROFIT_LAMPORTS")
-                        .ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(50_000); // 0.00005 SOL min
+                        .ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(100_000); // 0.0001 SOL min
 
                     loop {
                         let targets = scanner.get_scan_targets();
@@ -2561,7 +2561,7 @@ fn main() -> Result<()> {
 
                                 // Execute via Ultra if profitable enough
                                 if let Some(ref ultra) = ultra {
-                                    if opp.profit_lamports > min_profit && opp.borrow_amount <= 10_000_000 {
+                                    if opp.profit_lamports > min_profit && opp.borrow_amount <= 100_000_000 {
                                         let token_str = opp.token.to_string();
                                         let amount = opp.borrow_amount;
                                         let ultra_c = ultra.clone();
