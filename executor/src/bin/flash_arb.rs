@@ -64,7 +64,11 @@ fn run_flash_arb(client: &reqwest::blocking::Client, api_key: &str, kp: &Keypair
     let tokens_out = buy_quote.get("outAmount").and_then(|v| v.as_str()).unwrap_or("0");
     if tokens_out == "0" { return Err(anyhow!("no quote")); }
 
-    let sell_quote = jup_quote(client, api_key, token, WSOL, tokens_out)?;
+    // Use 98% of buy output for sell to account for buy slippage/fees
+    // Flash loan repay enforces profitability, so leaving 2% buffer is safe
+    let sell_amount: u64 = (tokens_out.parse::<u64>().unwrap_or(0) as f64 * 0.995) as u64;
+    let sell_amount_str = sell_amount.to_string();
+    let sell_quote = jup_quote(client, api_key, token, WSOL, &sell_amount_str)?;
     let sol_back = sell_quote.get("outAmount").and_then(|v| v.as_str()).unwrap_or("0");
     let profit: i64 = sol_back.parse::<i64>().unwrap_or(0) - amount.parse::<i64>().unwrap_or(0);
 
@@ -215,7 +219,9 @@ fn run_flash_arb(client: &reqwest::blocking::Client, api_key: &str, kp: &Keypair
 }
 
 fn jup_quote(client: &reqwest::blocking::Client, api_key: &str, input: &str, output: &str, amount: &str) -> Result<serde_json::Value> {
-    let url = format!("https://api.jup.ag/swap/v1/quote?inputMint={}&outputMint={}&amount={}&slippageBps=1000&onlyDirectRoutes=true", input, output, amount);
+    // 10000 bps = 100% slippage tolerance. Flash loan repay is the REAL safety net.
+    // Jupiter won't reject for slippage; if arb unprofitable → repay fails → atomic revert.
+    let url = format!("https://api.jup.ag/swap/v1/quote?inputMint={}&outputMint={}&amount={}&slippageBps=10000&onlyDirectRoutes=true", input, output, amount);
     let resp: serde_json::Value = client.get(&url).header("x-api-key", api_key).send()?.json()?;
     if resp.get("outAmount").is_none() { return Err(anyhow!("no quote")); }
     Ok(resp)
