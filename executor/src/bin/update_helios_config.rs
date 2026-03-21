@@ -10,7 +10,7 @@ use solana_sdk::{
 };
 
 const RPC_URL: &str = "https://api.mainnet-beta.solana.com";
-const HELIOS_ARB_PROGRAM_ID: &str = "DMSsKkNyyxVviDGHJTVpGxmSnzgMiPFrJ2SNvmbjhm64";
+const HELIOS_ARB_PROGRAM_ID: &str = "84JRYmwdpmj3iEK6r968zwfZSusHtx2hpjfLPAoPgdW";
 
 #[derive(BorshSerialize)]
 struct UpdateConfigArgs {

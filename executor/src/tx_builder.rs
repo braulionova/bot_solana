@@ -25,7 +25,7 @@ use market_engine::{
 
 use crate::flash_loans;
 
-pub const HELIOS_ARB_PROGRAM_ID: &str = "DMSsKkNyyxVviDGHJTVpGxmSnzgMiPFrJ2SNvmbjhm64";
+pub const HELIOS_ARB_PROGRAM_ID: &str = "84JRYmwdpmj3iEK6r968zwfZSusHtx2hpjfLPAoPgdW";
 const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbEquiGDJ66fqNWi9Ejh2To96pqV9pMBoY";
 const ASSOCIATED_TOKEN_PROGRAM_ID: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
