@@ -136,13 +136,21 @@ fn run_arb(client: &reqwest::blocking::Client, api_key: &str, kp: &Keypair,
     ];
     let mut jito_sent = false;
     for ep in &jito_endpoints {
-        let resp: serde_json::Value = client.post(*ep)
+        match client.post(*ep)
+            .timeout(std::time::Duration::from_secs(3))
             .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"sendBundle","params":[[&buy_tx, &sell_tx, &tip_tx]]}))
-            .send()?.json()?;
-        if let Some(id) = resp.get("result").and_then(|v| v.as_str()) {
-            println!("✅ JITO BUNDLE SENT: {} via {}", id, ep);
-            jito_sent = true;
-            break;
+            .send()
+        {
+            Ok(r) => {
+                if let Ok(resp) = r.json::<serde_json::Value>() {
+                    if let Some(id) = resp.get("result").and_then(|v| v.as_str()) {
+                        println!("✅ JITO BUNDLE SENT: {} via {}", id, ep);
+                        jito_sent = true;
+                        break;
+                    }
+                }
+            }
+            Err(_) => continue, // timeout or error, try next
         }
     }
 
@@ -161,28 +169,55 @@ fn run_arb(client: &reqwest::blocking::Client, api_key: &str, kp: &Keypair,
             .send()?.json()?;
         if let Some(sig) = buy_resp.get("result").and_then(|v| v.as_str()) {
             println!("✅ BUY TX SENT: {}", sig);
-            // Wait 500ms (1 slot) to avoid same-slot conflict (error 6024)
-            // Round 1 failed: buy+sell same slot → 6024
-            // Round 2 succeeded: buy slot N, sell slot N+1
+            // Wait 500ms for buy to propagate, then sell via Ultra
             std::thread::sleep(std::time::Duration::from_millis(500));
-            println!("⚡ Sending sell (500ms delay)...");
-            // Send ALREADY-SIGNED sell TX via RPC immediately
-            let sell_b64_rpc = base64::engine::general_purpose::STANDARD.encode(
-                &bs58::decode(&sell_tx).into_vec()?);
-            let sell_rpc_resp: serde_json::Value = client.post("https://solana-rpc.publicnode.com")
-                .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"sendTransaction",
-                    "params":[sell_b64_rpc,{"encoding":"base64","skipPreflight":true}]}))
+            println!("⚡ Selling via Ultra...");
+
+            let sell_url = format!(
+                "https://api.jup.ag/ultra/v1/order?inputMint={}&outputMint={}&amount={}&taker={}&excludeRouters=jupiterz,dflow",
+                token, wsol, tokens_out, taker
+            );
+            let sell_order: serde_json::Value = client.get(&sell_url)
+                .header("x-api-key", api_key).send()?.json()?;
+
+            if let Some(e) = sell_order.get("error").and_then(|v| v.as_str()) {
+                if !e.is_empty() {
+                    println!("❌ Ultra sell quote error: {}", e);
+                    return Ok(0);
+                }
+            }
+
+            let sell_tx_b64 = sell_order.get("transaction").and_then(|v| v.as_str())
+                .ok_or(anyhow!("no Ultra sell TX"))?;
+            let sell_req_id = sell_order.get("requestId").and_then(|v| v.as_str()).unwrap_or("");
+            let sell_out = sell_order.get("outAmount").and_then(|v| v.as_str()).unwrap_or("0");
+
+            // Sign Ultra TX
+            let sell_bytes = base64::engine::general_purpose::STANDARD.decode(sell_tx_b64)?;
+            let mut sell_tx_obj: VersionedTransaction = bincode::deserialize(&sell_bytes)?;
+            let sell_msg = sell_tx_obj.message.serialize();
+            sell_tx_obj.signatures[0] = kp.sign_message(&sell_msg);
+            let sell_signed_b64 = base64::engine::general_purpose::STANDARD.encode(
+                &bincode::serialize(&sell_tx_obj)?);
+
+            // Execute via Ultra
+            let exec_resp: serde_json::Value = client.post("https://api.jup.ag/ultra/v1/execute")
+                .header("Content-Type", "application/json").header("x-api-key", api_key)
+                .json(&serde_json::json!({"signedTransaction": sell_signed_b64, "requestId": sell_req_id}))
                 .send()?.json()?;
-            if let Some(sell_sig) = sell_rpc_resp.get("result").and_then(|v| v.as_str()) {
-                let real_profit = profit;
-                println!("✅ SELL TX SENT: {} (profit: {} lamports)", sell_sig, real_profit);
+
+            let status = exec_resp.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+            let sell_sig_str = exec_resp.get("signature").and_then(|v| v.as_str()).unwrap_or("");
+
+            if status == "Success" {
+                let sol_back: i64 = sell_out.parse().unwrap_or(0);
+                let real_profit = sol_back - amount.parse::<i64>().unwrap_or(0);
+                println!("✅ SELL SUCCESS: {} | net: {} lamports", sell_sig_str, real_profit);
                 return Ok(real_profit);
             } else {
-                println!("❌ Sell RPC failed: {}", sell_rpc_resp);
+                println!("❌ Ultra sell failed: {}", exec_resp);
+                return Ok(0);
             }
-            // Skip Ultra fallback
-            return Ok(0);
-            return Ok(0);
 
             let sell_resp: serde_json::Value = client.post("https://solana-rpc.publicnode.com")
                 .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"sendTransaction",
