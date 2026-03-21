@@ -18,7 +18,7 @@ use solana_sdk::{
 use std::sync::Arc;
 
 const RPC_URL: &str = "https://api.mainnet-beta.solana.com";
-const HELIOS_ARB_PROGRAM_ID: &str = "8Hi69VoPFTufCZd1Ht2XHHt5mDxrGCMedea1WfCLwE9c";
+const HELIOS_ARB_PROGRAM_ID: &str = "DMSsKkNyyxVviDGHJTVpGxmSnzgMiPFrJ2SNvmbjhm64";
 const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const MAPPED_POOLS_FILE: &str = "/root/solana-bot/mapped_pools.json";

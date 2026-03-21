@@ -10,7 +10,7 @@ use solana_sdk::{
 };
 
 const RPC_URL: &str = "https://api.mainnet-beta.solana.com";
-const HELIOS_ARB_PROGRAM_ID: &str = "8Hi69VoPFTufCZd1Ht2XHHt5mDxrGCMedea1WfCLwE9c";
+const HELIOS_ARB_PROGRAM_ID: &str = "DMSsKkNyyxVviDGHJTVpGxmSnzgMiPFrJ2SNvmbjhm64";
 
 #[derive(BorshSerialize)]
 struct UpdateConfigArgs {
@@ -36,20 +36,38 @@ fn main() -> Result<()> {
         "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".parse::<Pubkey>()?,
     ];
 
-    let mut data = vec![29, 158, 252, 191, 10, 83, 219, 99];
-    UpdateConfigArgs {
-        new_authority: None,
-        new_whitelist: Some(whitelist.clone()),
-    }
-    .serialize(&mut data)?;
+    // Check if config PDA exists; if not, initialize first
+    let config_exists = rpc.get_account(&config_pda).is_ok();
 
-    let ix = Instruction {
-        program_id: helios_program,
-        accounts: vec![
-            AccountMeta::new(config_pda, false),
-            AccountMeta::new_readonly(payer.pubkey(), true),
-        ],
-        data,
+    let ix = if !config_exists {
+        println!("Config PDA does not exist, initializing...");
+        // initialize discriminator: sha256("global:initialize")[..8]
+        let data = vec![175, 175, 109, 31, 13, 152, 155, 237];
+        Instruction {
+            program_id: helios_program,
+            accounts: vec![
+                AccountMeta::new(config_pda, false),
+                AccountMeta::new(payer.pubkey(), true),
+                AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+            ],
+            data,
+        }
+    } else {
+        println!("Config PDA exists, updating whitelist...");
+        let mut data = vec![29, 158, 252, 191, 10, 83, 219, 99];
+        UpdateConfigArgs {
+            new_authority: None,
+            new_whitelist: Some(whitelist.clone()),
+        }
+        .serialize(&mut data)?;
+        Instruction {
+            program_id: helios_program,
+            accounts: vec![
+                AccountMeta::new(config_pda, false),
+                AccountMeta::new_readonly(payer.pubkey(), true),
+            ],
+            data,
+        }
     };
 
     let recent_blockhash = rpc.get_latest_blockhash()?;

@@ -7,7 +7,7 @@ use anchor_lang::solana_program::{
 };
 use anchor_spl::token::{Token, TokenAccount};
 
-declare_id!("8Hi69VoPFTufCZd1Ht2XHHt5mDxrGCMedea1WfCLwE9c");
+declare_id!("DMSsKkNyyxVviDGHJTVpGxmSnzgMiPFrJ2SNvmbjhm64");
 
 const MAX_DEX_WHITELIST: usize = 10;
 const CONFIG_SPACE: usize = 8 + 32 + 4 + (32 * MAX_DEX_WHITELIST);

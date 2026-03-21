@@ -5,7 +5,7 @@ resolution = true
 skip-lint = false
 
 [programs.mainnet]
-helios_arb = "8Hi69VoPFTufCZd1Ht2XHHt5mDxrGCMedea1WfCLwE9c"
+helios_arb = "DMSsKkNyyxVviDGHJTVpGxmSnzgMiPFrJ2SNvmbjhm64"
 
 [registry]
 url = "https://api.apr.dev"
