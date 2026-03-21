@@ -218,38 +218,31 @@ pub fn build_wrapped_instructions_direct(
         // For other providers, combine swap IXs into a single "helios_ix" equivalent
         // by building them sequentially. Only MarginFi supports multi-IX flash loans natively.
         FlashProvider::Kamino => {
-            // Kamino: [borrow, swap0..swapN, repay]
-            // Kamino repay references the borrow instruction index.
+            // Kamino flash loan: special flash_borrow + flash_repay instructions
+            // Layout from on-chain TX: 6 accounts each, simple disc + amount
             let cfg = resolve_kamino_config(borrow_mint)?;
             let program_id: Pubkey = KAMINO_PROGRAM_ID.parse().unwrap();
-            let token_program: Pubkey = TOKEN_PROGRAM_ID.parse().unwrap();
-            let (market_authority, _) =
-                Pubkey::find_program_address(&[b"lma", cfg.lending_market.as_ref()], &program_id);
 
-            let mut borrow_data = vec![135, 231, 52, 167, 7, 52, 212, 193];
+            // Flash borrow discriminator (from on-chain: 02da8aeb4fc91966)
+            let mut borrow_data = vec![2, 218, 138, 235, 79, 201, 25, 102];
             borrow_data.extend_from_slice(&borrow_amount.to_le_bytes());
 
-            let kamino_accounts = vec![
-                AccountMeta::new_readonly(payer.pubkey(), true),
-                AccountMeta::new_readonly(market_authority, false),
-                AccountMeta::new_readonly(cfg.lending_market, false),
-                AccountMeta::new(cfg.reserve, false),
-                AccountMeta::new_readonly(borrow_mint, false),
-                AccountMeta::new(cfg.liquidity_supply, false),
-                AccountMeta::new(user_token_account, false),
-                AccountMeta::new(cfg.fee_vault, false),
-                AccountMeta::new_readonly(program_id, false),
-                AccountMeta::new_readonly(program_id, false),
-                AccountMeta::new_readonly(sysvar::instructions::id(), false),
-                AccountMeta::new_readonly(token_program, false),
-            ];
-
+            // 6 accounts from real on-chain TX:
+            // [reserve, lending_market, liquidity_supply, fee_vault, user_dest_ata, sysvar_instructions]
             let borrow_ix = Instruction {
                 program_id,
-                accounts: kamino_accounts.clone(),
+                accounts: vec![
+                    AccountMeta::new(cfg.reserve, false),
+                    AccountMeta::new_readonly(cfg.lending_market, false),
+                    AccountMeta::new(cfg.liquidity_supply, false),
+                    AccountMeta::new(cfg.fee_vault, false),
+                    AccountMeta::new(user_token_account, false),
+                    AccountMeta::new_readonly(sysvar::instructions::id(), false),
+                ],
                 data: borrow_data,
             };
 
+            // Flash repay: same disc pattern, amount + borrow_ix_index
             let borrow_ix_index = preceding_ix_count as u8;
             let mut repay_data = vec![185, 117, 0, 203, 96, 245, 180, 186];
             repay_data.extend_from_slice(&borrow_amount.to_le_bytes());
@@ -257,7 +250,14 @@ pub fn build_wrapped_instructions_direct(
 
             let repay_ix = Instruction {
                 program_id,
-                accounts: kamino_accounts,
+                accounts: vec![
+                    AccountMeta::new(cfg.reserve, false),
+                    AccountMeta::new_readonly(cfg.lending_market, false),
+                    AccountMeta::new(cfg.liquidity_supply, false),
+                    AccountMeta::new(cfg.fee_vault, false),
+                    AccountMeta::new(user_token_account, false),
+                    AccountMeta::new_readonly(sysvar::instructions::id(), false),
+                ],
                 data: repay_data,
             };
 
