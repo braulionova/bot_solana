@@ -54,7 +54,9 @@ fn main() -> Result<()> {
                 .map(|a| a.iter().filter_map(|r| r.get("swapInfo").and_then(|s| s.get("label")).and_then(|l| l.as_str()).map(String::from)).collect())
                 .unwrap_or_default();
 
-            if profit > 0 {
+            // Only execute if profit > TX fee (~5K) + margin
+            let min_profit: i64 = std::env::var("MIN_PROFIT").and_then(|v| Ok(v.parse().unwrap_or(8000))).unwrap_or(8000);
+            if profit > min_profit {
                 println!("✅ PROFITABLE! {} SOL: +{} lam | route: {:?}", in_amt as f64 / 1e9, profit, routes);
 
                 // Get the TX and sign+send
