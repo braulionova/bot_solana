@@ -215,7 +215,7 @@ fn run_flash_arb(client: &reqwest::blocking::Client, api_key: &str, kp: &Keypair
 }
 
 fn jup_quote(client: &reqwest::blocking::Client, api_key: &str, input: &str, output: &str, amount: &str) -> Result<serde_json::Value> {
-    let url = format!("https://api.jup.ag/swap/v1/quote?inputMint={}&outputMint={}&amount={}&slippageBps=300&onlyDirectRoutes=true", input, output, amount);
+    let url = format!("https://api.jup.ag/swap/v1/quote?inputMint={}&outputMint={}&amount={}&slippageBps=1000&onlyDirectRoutes=true", input, output, amount);
     let resp: serde_json::Value = client.get(&url).header("x-api-key", api_key).send()?.json()?;
     if resp.get("outAmount").is_none() { return Err(anyhow!("no quote")); }
     Ok(resp)
@@ -224,7 +224,7 @@ fn jup_quote(client: &reqwest::blocking::Client, api_key: &str, input: &str, out
 fn jup_swap_tx(client: &reqwest::blocking::Client, api_key: &str, quote: &serde_json::Value, taker: &str) -> Result<String> {
     let resp: serde_json::Value = client.post("https://api.jup.ag/swap/v1/swap")
         .header("Content-Type", "application/json").header("x-api-key", api_key)
-        .json(&serde_json::json!({"quoteResponse": quote, "userPublicKey": taker, "wrapAndUnwrapSol": true, "useSharedAccounts": true}))
+        .json(&serde_json::json!({"quoteResponse": quote, "userPublicKey": taker, "wrapAndUnwrapSol": false, "useSharedAccounts": true}))
         .send()?.json()?;
     resp.get("swapTransaction").and_then(|v| v.as_str()).map(String::from)
         .ok_or(anyhow!("no swapTransaction"))
