@@ -138,14 +138,32 @@ fn extract_swap_instructions(tx_b64: &str) -> Result<Vec<Instruction>> {
     let tx: VersionedTransaction = bincode::deserialize(&tx_bytes)
         .context("deserialize tx")?;
 
-    // For V0 messages, we need static keys + ALT-resolved keys.
-    // Since we can't resolve ALTs without RPC, we use static_account_keys only
-    // and skip instructions that reference ALT indices.
-    let account_keys: Vec<Pubkey> = match &tx.message {
-        VersionedMessage::Legacy(m) => m.account_keys.clone(),
-        VersionedMessage::V0(m) => m.account_keys.clone(),
+    // Resolve ALL account keys including Address Lookup Tables (ALTs).
+    // V0 messages reference ALT accounts by index — we need to resolve them via RPC.
+    let (account_keys, n_static_keys) = match &tx.message {
+        VersionedMessage::Legacy(m) => (m.account_keys.clone(), m.account_keys.len()),
+        VersionedMessage::V0(m) => {
+            let mut keys = m.account_keys.clone();
+            let n_static = keys.len();
+            // Resolve ALTs via RPC
+            for alt_lookup in &m.address_table_lookups {
+                let alt_addr = alt_lookup.account_key;
+                if let Ok(alt_data) = resolve_alt_accounts(&alt_addr) {
+                    for &idx in &alt_lookup.writable_indexes {
+                        if (idx as usize) < alt_data.len() {
+                            keys.push(alt_data[idx as usize]);
+                        }
+                    }
+                    for &idx in &alt_lookup.readonly_indexes {
+                        if (idx as usize) < alt_data.len() {
+                            keys.push(alt_data[idx as usize]);
+                        }
+                    }
+                }
+            }
+            (keys, n_static)
+        }
     };
-    let n_static_keys = account_keys.len();
 
     let compiled_ixs = match &tx.message {
         VersionedMessage::Legacy(m) => &m.instructions,
@@ -171,17 +189,14 @@ fn extract_swap_instructions(tx_b64: &str) -> Result<Vec<Instruction>> {
         // Skip token syncNative (data=[17]) — WSOL wrapping handled by flash loan
         if program_id == spl_token && cix.data.len() == 1 && cix.data[0] == 17 { continue; }
 
-        // Skip instructions that reference ALT accounts (idx >= n_static_keys)
-        let has_alt_ref = cix.accounts.iter().any(|&idx| (idx as usize) >= n_static_keys);
-        if has_alt_ref {
-            // Can't resolve ALT accounts without RPC — skip this instruction
-            continue;
-        }
+        // Check all account indices are resolvable
+        let has_bad_ref = cix.accounts.iter().any(|&idx| (idx as usize) >= account_keys.len());
+        if has_bad_ref { continue; }
 
         let accounts: Vec<solana_sdk::instruction::AccountMeta> = cix.accounts.iter().map(|&idx| {
             let pubkey = account_keys[idx as usize];
-            let is_signer = tx.message.is_signer(idx as usize);
-            let is_writable = tx.message.is_maybe_writable(idx as usize);
+            let is_signer = if (idx as usize) < n_static_keys { tx.message.is_signer(idx as usize) } else { false };
+            let is_writable = if (idx as usize) < n_static_keys { tx.message.is_maybe_writable(idx as usize) } else { true }; // ALT accounts default writable
             if is_writable {
                 solana_sdk::instruction::AccountMeta::new(pubkey, is_signer)
             } else {
@@ -197,4 +212,41 @@ fn extract_swap_instructions(tx_b64: &str) -> Result<Vec<Instruction>> {
     }
 
     Ok(swap_ixs)
+}
+
+/// Resolve Address Lookup Table accounts via RPC.
+fn resolve_alt_accounts(alt_address: &Pubkey) -> Result<Vec<Pubkey>> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .context("alt client")?;
+    let resp: serde_json::Value = client
+        .post("https://solana-rpc.publicnode.com")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "method": "getAccountInfo",
+            "params": [alt_address.to_string(), {"encoding": "base64"}]
+        }))
+        .send().context("alt rpc")?
+        .json().context("alt json")?;
+
+    let data_b64 = resp.get("result")
+        .and_then(|r| r.get("value"))
+        .and_then(|v| v.get("data"))
+        .and_then(|d| d.as_array())
+        .and_then(|a| a.first())
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("no ALT data"))?;
+
+    let data = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data_b64)
+        .context("alt decode")?;
+
+    // ALT layout: 56 bytes header + 32 bytes per address
+    if data.len() < 56 { return Ok(vec![]); }
+    let addresses: Vec<Pubkey> = data[56..]
+        .chunks_exact(32)
+        .filter_map(|chunk| Pubkey::try_from(chunk).ok())
+        .collect();
+
+    Ok(addresses)
 }

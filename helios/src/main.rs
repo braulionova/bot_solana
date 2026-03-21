@@ -2687,7 +2687,7 @@ fn main() -> Result<()> {
                                                                             .json(&serde_json::json!({
                                                                                 "jsonrpc":"2.0","id":1,
                                                                                 "method":"sendTransaction",
-                                                                                "params":[tx_b64,{"encoding":"base64","skipPreflight":true,"preflightCommitment":"processed"}]
+                                                                                "params":[tx_b64,{"encoding":"base64","skipPreflight":false,"preflightCommitment":"processed"}]
                                                                             }))
                                                                             .send().await;
                                                                         match resp {
