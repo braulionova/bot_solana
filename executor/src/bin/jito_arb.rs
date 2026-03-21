@@ -28,7 +28,7 @@ fn main() -> Result<()> {
 
     // Step 1: Get buy quote
     let buy_quote: serde_json::Value = client
-        .get(format!("https://api.jup.ag/swap/v1/quote?inputMint={}&outputMint={}&amount={}&slippageBps=100", wsol, usdc, amount))
+        .get(format!("https://api.jup.ag/swap/v1/quote?inputMint={}&outputMint={}&amount={}&slippageBps=300", wsol, usdc, amount))
         .header("x-api-key", &api_key)
         .send()?.json()?;
     let tokens_out = buy_quote.get("outAmount").and_then(|v| v.as_str()).unwrap_or("0");
@@ -36,7 +36,7 @@ fn main() -> Result<()> {
 
     // Step 2: Get sell quote
     let sell_quote: serde_json::Value = client
-        .get(format!("https://api.jup.ag/swap/v1/quote?inputMint={}&outputMint={}&amount={}&slippageBps=100", usdc, wsol, tokens_out))
+        .get(format!("https://api.jup.ag/swap/v1/quote?inputMint={}&outputMint={}&amount={}&slippageBps=300", usdc, wsol, tokens_out))
         .header("x-api-key", &api_key)
         .send()?.json()?;
     let sol_back = sell_quote.get("outAmount").and_then(|v| v.as_str()).unwrap_or("0");
