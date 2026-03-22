@@ -1108,6 +1108,9 @@ fn main() -> Result<()> {
                             if !entries.is_empty() {
                                 let is_last = shred.last_in_slot;
                                 shred_bh_ref.on_entries_decoded(slot, &entries, is_last);
+                                // Export latest entry hash to tmpfile for external processes
+                                let last_hash = entries.last().unwrap().hash;
+                                let _ = std::fs::write("/root/spy_node/.blockhash", last_hash.to_string());
                             }
                             n_txs_decoded += txs.len() as u64;
                             for tx in txs {
